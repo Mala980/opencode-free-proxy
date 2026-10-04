@@ -285,8 +285,11 @@ function activeModels(catalog, state) {
   }
 
   // Free models that only models.dev knows about, with its real metadata.
+  // Without Zen to cross-check them we skip the ones upstream already marked
+  // deprecated, so a Zen outage cannot flood /v1/models with legacy ids.
   for (const [id, entry] of fromModelsDev) {
     if (seen.has(id) || blocked.has(id) || !onZen(id)) continue;
+    if (!state.liveIds && entry.deprecated) continue;
     out.push({ ...entry, dynamic: true, unverified: true });
     seen.add(id);
   }

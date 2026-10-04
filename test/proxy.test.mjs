@@ -844,21 +844,36 @@ describe("models.dev as the free-model source", () => {
 
     await withModelsDev({ opencode: { models } }, { refreshSource: "models-dev" }, async (baseUrl) => {
       const served = (await listModels(baseUrl)).map((m) => m.id).sort();
-      assert.deepEqual(served, [...zero, "glm-4.7-free"].sort());
+      assert.deepEqual(served, [...zero].sort());
       for (const id of priced) {
         assert.ok(!served.includes(id), `${id} costs money according to models.dev`);
       }
+      // Zen was not consulted, so an upstream-deprecated id is not added.
+      assert.ok(!served.includes("glm-4.7-free"));
     });
   });
 
-  test("new free models arrive with the metadata opencode publishes", async () => {
-    await withModelsDev(API_FIXTURE, { refreshSource: "models-dev" }, async (baseUrl) => {
+  test("a free id models.dev knows and Zen serves arrives with its metadata", async () => {
+    const incoming = {
+      name: "Trinity Mini Free",
+      cost: { input: 0, output: 0 },
+      limit: { context: 262144, output: 65536 },
+      attachment: true,
+      tool_call: true,
+      reasoning: true,
+      modalities: { input: ["text", "image"], output: ["text"] },
+    };
+    const models = { ...API_FIXTURE.opencode.models, "trinity-mini-free": incoming };
+
+    await withModelsDev({ opencode: { models } }, { refreshSource: "models-dev" }, async (baseUrl) => {
       const byId = Object.fromEntries((await listModels(baseUrl)).map((m) => [m.id, m]));
-      assert.equal(byId["glm-4.7-free"].display_name, "GLM-4.7 Free");
-      assert.equal(byId["glm-4.7-free"].context_window, 204800);
-      assert.equal(byId["glm-4.7-free"].max_output_tokens, 131072);
-      assert.equal(byId["glm-4.7-free"].deprecation, "deprecated");
-      assert.equal(byId["big-pickle"].context_window, 200000);
+      assert.equal(byId["trinity-mini-free"].display_name, "Trinity Mini Free");
+      assert.equal(byId["trinity-mini-free"].context_window, 262144);
+      assert.equal(byId["trinity-mini-free"].max_output_tokens, 65536);
+      assert.equal(byId["trinity-mini-free"].supports_attachments, true);
+      assert.equal(byId["trinity-mini-free"].deprecation, null);
+      // Curated deprecation flags keep working through the merge.
+      assert.equal(byId["mimo-v2.5-free"].deprecation, "deprecated");
     });
   });
 
