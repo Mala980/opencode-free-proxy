@@ -1,0 +1,79 @@
+{
+  "$comment": "Captured from the real OpenCode CLI (opencode-linux-x64 1.18.34, bun 1.3.14) by pointing it at a local server. Contract test: what this proxy sends must stay equivalent to what the official client sends. Re-capture with scripts/capture-cli-fixture.mjs.",
+  "capturedAt": "2026-10-04",
+  "cli": {
+    "package": "opencode-linux-x64",
+    "version": "1.18.34",
+    "runtime": "bun/1.3.14"
+  },
+  "requests": [
+    {
+      "endpoint": "responses",
+      "headers": {
+        "authorization": "Bearer public",
+        "content-type": "application/json",
+        "user-agent": "opencode/1.18.34 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14",
+        "x-opencode-client": "cli",
+        "x-opencode-project": "global",
+        "x-opencode-request": "msg_106934411001H1or3rFZc6fGWF",
+        "x-opencode-session": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
+        "x-opencode-session-id": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
+        "accept": "*/*"
+      },
+      "body": {
+        "model": "gpt-5.4-nano",
+        "stream": true,
+        "keys": [
+          "include",
+          "input",
+          "max_output_tokens",
+          "model",
+          "reasoning",
+          "store",
+          "stream"
+        ],
+        "toolNames": []
+      }
+    },
+    {
+      "endpoint": "chat/completions",
+      "headers": {
+        "authorization": "Bearer public",
+        "content-type": "application/json",
+        "user-agent": "opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+        "x-opencode-client": "cli",
+        "x-opencode-project": "global",
+        "x-opencode-request": "msg_106934411001H1or3rFZc6fGWF",
+        "x-opencode-session": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
+        "x-opencode-session-id": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
+        "accept": "*/*"
+      },
+      "body": {
+        "model": "big-pickle",
+        "stream": true,
+        "keys": [
+          "max_tokens",
+          "messages",
+          "model",
+          "stream",
+          "stream_options",
+          "tool_choice",
+          "tools"
+        ],
+        "toolNames": [
+          "bash",
+          "edit",
+          "glob",
+          "grep",
+          "read",
+          "skill",
+          "task",
+          "todowrite",
+          "webfetch",
+          "websearch",
+          "write"
+        ]
+      }
+    }
+  ]
+}
