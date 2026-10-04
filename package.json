@@ -1,18 +1,27 @@
 {
   "name": "opencode-free-proxy",
-  "version": "0.9.0",
-  "description": "Proxy server for OpenCode free-tier AI models via Zen API",
+  "version": "1.0.0",
+  "description": "Free OpenCode Zen models exposed as OpenAI, Responses and Anthropic APIs",
   "type": "module",
   "main": "server.mjs",
+  "bin": {
+    "opencode-free-proxy": "server.mjs"
+  },
   "scripts": {
     "start": "node server.mjs",
-    "dev": "node --watch server.mjs"
-  },
-  "dependencies": {
-    "express": "^4.21.0"
+    "dev": "node --watch server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "update:models": "node scripts/update-models.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18.17"
   },
+  "files": [
+    "server.mjs",
+    "models.json",
+    "scripts/",
+    "README.md"
+  ],
   "license": "MIT"
 }

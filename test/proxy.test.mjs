@@ -1,0 +1,577 @@
+import { test, before, after, describe } from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createServer } from "../server.mjs";
+
+/**
+ * End-to-end tests for the proxy against a mock Zen upstream.
+ * Run with: npm test
+ */
+
+const KEYS = { tester: "oc-test-key-0000000000000000000000000" };
+
+function sse(payload) {
+  return `data: ${JSON.stringify(payload)}\n\n`;
+}
+
+function startMockUpstream() {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString();
+      const body = raw ? JSON.parse(raw) : {};
+      const url = new URL(req.url, "http://mock");
+      requests.push({ path: url.pathname, headers: req.headers, body });
+
+      const model = body.model;
+
+      if (url.pathname === "/v1/models") {
+        return json(res, 200, {
+          object: "list",
+          data: [
+            "big-pickle",
+            "space-bunny-free",
+            "longcat-2.5-preview-free",
+            "mimo-v2.6-flash-free",
+            "mimo-v2.5-free",
+            "fledge-alpha-free",
+            "nemotron-3-ultra-free",
+            "nemotron-3.5-lightning-free",
+            "ling-3.1-flash-free",
+            "ling-3.0-flash-fin-free",
+            "deepseek-v4-flash-free",
+            "muse-spark-1.3-contributor-free",
+            "brand-new-model-free",
+            "ratelimited-free",
+            "midstream-free",
+            "timeout-free",
+            "thinking-free",
+            "gpt-6-astra",
+          ].map((id) => ({ id, object: "model", owned_by: "opencode" })),
+        });
+      }
+
+      if (url.pathname === "/v1/responses") {
+        return json(res, 200, {
+          id: "resp_1",
+          object: "response",
+          model,
+          status: "completed",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "responses ok" }] }],
+        });
+      }
+
+      if (url.pathname === "/v1/chat/completions") {
+        if (model === "ratelimited-free") {
+          return json(res, 429, {
+            error: { message: "You have exceeded your free usage limit", type: "FreeUsageLimitError" },
+          });
+        }
+        if (model === "timeout-free") return; // never respond
+
+        const toolCallRequested = JSON.stringify(body).includes("get_weather");
+
+        if (body.stream) {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          if (model === "midstream-free") {
+            res.write(sse({ choices: [{ index: 0, delta: { content: "partial" } }] }));
+            res.write(
+              sse({ error: { message: "You have exceeded your free usage limit", type: "FreeUsageLimitError" } }),
+            );
+            return res.end();
+          }
+          if (model === "thinking-free") {
+            res.write(sse({ choices: [{ index: 0, delta: { reasoning_content: "Step 1" } }] }));
+            res.write(sse({ choices: [{ index: 0, delta: { reasoning_content: ": think" } }] }));
+          }
+          res.write(sse({ choices: [{ index: 0, delta: { role: "assistant", content: "" } }] }));
+          res.write(sse({ choices: [{ index: 0, delta: { content: "Hello" } }] }));
+          res.write(sse({ choices: [{ index: 0, delta: { content: " world" } }] }));
+          if (toolCallRequested) {
+            res.write(
+              sse({
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        { index: 0, id: "call_1", type: "function", function: { name: "get_weather", arguments: '{"city":' } },
+                      ],
+                    },
+                  },
+                ],
+              }),
+            );
+            res.write(
+              sse({
+                choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"Paris"}' } }] } }],
+              }),
+            );
+            res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }));
+          } else {
+            res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }));
+          }
+          res.write("data: [DONE]\n\n");
+          return res.end();
+        }
+
+        const message = { role: "assistant", content: "Hello world" };
+        if (toolCallRequested) {
+          message.content = null;
+          message.tool_calls = [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "get_weather", arguments: '{"city":"Paris"}' },
+            },
+          ];
+        }
+        return json(res, 200, {
+          id: "chatcmpl-1",
+          object: "chat.completion",
+          created: 1791095878,
+          model,
+          choices: [{ index: 0, message, finish_reason: toolCallRequested ? "tool_calls" : "stop" }],
+          usage: { prompt_tokens: 11, completion_tokens: 3, total_tokens: 14 },
+        });
+      }
+
+      json(res, 404, { error: { message: "not found" } });
+    });
+    req.on("error", () => {});
+  });
+
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+
+  function json(res, status, payload) {
+    const text = JSON.stringify(payload);
+    res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) });
+    res.end(text);
+  }
+
+  return {
+    requests,
+    listen: () => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port))),
+    close: () =>
+      new Promise((resolve) => {
+        for (const socket of sockets) socket.destroy();
+        server.close(resolve);
+      }),
+  };
+}
+
+let upstream;
+let app;
+let base;
+let keyFile;
+
+const sockets = new Set();
+
+before(async () => {
+  upstream = startMockUpstream();
+  const upstreamPort = await upstream.listen();
+  keyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocp-")), "api-keys.json");
+  fs.writeFileSync(keyFile, JSON.stringify(KEYS));
+  app = createServer({
+    port: 0,
+    host: "127.0.0.1",
+    zenBase: `http://127.0.0.1:${upstreamPort}/v1`,
+    keysFile: keyFile,
+    logRequests: false,
+  });
+  const addr = await app.listen();
+  base = `http://127.0.0.1:${addr.port}`;
+});
+
+after(async () => {
+  await app?.close();
+  await upstream?.close();
+});
+
+function call(pathname, { method = "GET", body, key = KEYS.tester } = {}) {
+  return new Promise((resolve, reject) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const req = http.request(
+      `${base}${pathname}`,
+      {
+        method,
+        headers: {
+          ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
+          ...(key ? { Authorization: `Bearer ${key}` } : {}),
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode,
+            headers: res.headers,
+            text: Buffer.concat(chunks).toString(),
+            json: () => JSON.parse(Buffer.concat(chunks).toString()),
+          }),
+        );
+      },
+    );
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+function postJson(baseUrl, pathname, body, key = KEYS.tester) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = http.request(
+      `${baseUrl}${pathname}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+          Authorization: `Bearer ${key}`,
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString();
+          resolve({ status: res.statusCode, text, json: () => JSON.parse(text) });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function withProxy(overrides, fn) {
+  const tmpKeys = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocpx-")), "keys.json");
+  fs.writeFileSync(tmpKeys, JSON.stringify(KEYS));
+  const instance = createServer({
+    port: 0,
+    host: "127.0.0.1",
+    zenBase: app.cfg.zenBase,
+    keysFile: tmpKeys,
+    logRequests: false,
+    ...overrides,
+  });
+  const addr = await instance.listen();
+  try {
+    return await fn(`http://127.0.0.1:${addr.port}`, instance);
+  } finally {
+    await instance.close();
+  }
+}
+
+describe("health & discovery", () => {
+  test("GET /health is public and reports upstream state", async () => {
+    const res = await call("/health", { key: null });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.status, "ok");
+    assert.equal(data.upstream.live, true);
+    assert.ok(data.models.includes("big-pickle"));
+    assert.ok(data.models.includes("brand-new-model-free"), "new free models on Zen are picked up");
+    assert.ok(!data.models.includes("gpt-6-astra"), "paid models are never exposed");
+  });
+
+  test("GET /v1/models requires a key and lists free models with metadata", async () => {
+    const noAuth = await call("/v1/models", { key: null });
+    assert.equal(noAuth.status, 401);
+
+    const res = await call("/v1/models");
+    assert.equal(res.status, 200);
+    const ids = res.json().data.map((m) => m.id);
+    assert.ok(ids.includes("big-pickle"));
+    assert.ok(ids.includes("space-bunny-free"));
+    assert.ok(!ids.includes("jev-1.13-free"), "systemone models are not proxied");
+    const pickle = res.json().data.find((m) => m.id === "big-pickle");
+    assert.equal(pickle.context_window, 200000);
+    assert.equal(pickle.supports_tools, true);
+  });
+
+  test("x-api-key works too", async () => {
+    const res = await new Promise((resolve, reject) => {
+      const req = http.request(`${base}/v1/models`, { headers: { "x-api-key": KEYS.tester } }, (r) => {
+        const chunks = [];
+        r.on("data", (c) => chunks.push(c));
+        r.on("end", () => resolve({ status: r.statusCode, text: Buffer.concat(chunks).toString() }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    assert.equal(res.status, 200);
+  });
+});
+
+describe("OpenAI format", () => {
+  test("non-streaming chat completion", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.model, "big-pickle");
+    assert.equal(data.choices[0].message.content, "Hello world");
+  });
+
+  test("streaming chat completion", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }], stream: true },
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers["content-type"], /text\/event-stream/);
+    assert.match(res.text, /"content":"Hello"/);
+    assert.match(res.text, /data: \[DONE\]/);
+  });
+
+  test("temperature and max_tokens are forwarded", async () => {
+    await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }], temperature: 0.2, max_tokens: 64 },
+    });
+    const last = upstream.requests[upstream.requests.length - 1];
+    assert.equal(last.body.temperature, 0.2);
+    assert.equal(last.body.max_tokens, 64);
+  });
+
+  test("Zen auth headers are attached", async () => {
+    await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
+    });
+    const last = upstream.requests[upstream.requests.length - 1];
+    assert.equal(last.headers.authorization, "Bearer public");
+    assert.equal(last.headers["x-opencode-client"], "cli");
+    assert.equal(last.headers["x-opencode-project"], "global");
+    assert.match(last.headers["x-opencode-session"], /^ses_/);
+    assert.match(last.headers["x-opencode-request"], /^msg_/);
+    assert.match(last.headers["user-agent"], /^opencode\/1\.18\.34 /);
+  });
+});
+
+describe("Anthropic format", () => {
+  test("non-streaming /v1/messages", async () => {
+    const res = await call("/v1/messages", {
+      method: "POST",
+      body: {
+        model: "big-pickle",
+        system: "You are helpful.",
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hi" }],
+      },
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.type, "message");
+    assert.equal(data.role, "assistant");
+    assert.equal(data.content[0].type, "text");
+    assert.equal(data.content[0].text, "Hello world");
+    assert.equal(data.stop_reason, "end_turn");
+    assert.equal(data.usage.input_tokens, 11);
+
+    const last = upstream.requests[upstream.requests.length - 1];
+    assert.equal(last.body.messages[0].role, "system");
+    assert.equal(last.body.messages[0].content, "You are helpful.");
+    assert.equal(last.body.messages[1].content, "hi");
+  });
+
+  test("streaming /v1/messages emits Anthropic SSE", async () => {
+    const res = await call("/v1/messages", {
+      method: "POST",
+      body: { model: "big-pickle", max_tokens: 128, messages: [{ role: "user", content: "hi" }], stream: true },
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.text, /event: message_start/);
+    assert.match(res.text, /"type":"text_delta","text":"Hello"/);
+    assert.match(res.text, /event: content_block_stop/);
+    assert.match(res.text, /event: message_delta/);
+    assert.match(res.text, /event: message_stop/);
+  });
+
+  test("reasoning_content becomes a single thinking block", async () => {
+    const res = await call("/v1/messages", {
+      method: "POST",
+      body: { model: "thinking-free", max_tokens: 128, stream: true, messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(res.status, 200);
+    const thinkingStarts = res.text.match(/"content_block":\{"type":"thinking"/g) || [];
+    assert.equal(thinkingStarts.length, 1, "thinking block is opened once");
+    assert.match(res.text, /"thinking":"Step 1"/);
+    assert.match(res.text, /"thinking":": think"/);
+    assert.match(res.text, /"type":"text_delta","text":"Hello"/);
+    assert.ok((res.text.match(/"type":"content_block_stop"/g) || []).length >= 2, "both blocks are closed");
+  });
+
+  test("tool calls round-trip as tool_use blocks", async () => {
+    const res = await call("/v1/messages", {
+      method: "POST",
+      body: {
+        model: "big-pickle",
+        max_tokens: 128,
+        tools: [{ name: "get_weather", description: "Get weather", input_schema: { type: "object" } }],
+        messages: [{ role: "user", content: "weather in Paris?" }],
+      },
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.stop_reason, "tool_use");
+    const toolUse = data.content.find((b) => b.type === "tool_use");
+    assert.equal(toolUse.name, "get_weather");
+    assert.deepEqual(toolUse.input, { city: "Paris" });
+  });
+
+  test("streaming tool calls produce input_json_delta", async () => {
+    const res = await call("/v1/messages", {
+      method: "POST",
+      body: {
+        model: "big-pickle",
+        max_tokens: 128,
+        stream: true,
+        tools: [{ name: "get_weather", description: "Get weather", input_schema: { type: "object" } }],
+        messages: [{ role: "user", content: "weather in Paris?" }],
+      },
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.text, /"type":"tool_use"/);
+    assert.match(res.text, /"input_json_delta"/);
+    assert.match(res.text, /"stop_reason":"tool_use"/);
+  });
+});
+
+describe("Responses API", () => {
+  test("/v1/responses proxies responses-endpoint models", async () => {
+    const res = await call("/v1/responses", {
+      method: "POST",
+      body: { model: "muse-spark-1.3-contributor-free", input: "hi" },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.json().output[0].content[0].text, "responses ok");
+    const last = upstream.requests[upstream.requests.length - 1];
+    assert.equal(last.path, "/v1/responses");
+  });
+
+  test("chat models are rejected on /v1/responses", async () => {
+    const res = await call("/v1/responses", { method: "POST", body: { model: "big-pickle", input: "hi" } });
+    assert.equal(res.status, 400);
+    assert.match(res.json().error.message, /chat model/);
+  });
+});
+
+describe("error handling", () => {
+  test("free-tier limit becomes 429 (OpenAI shape)", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "ratelimited-free", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(res.status, 429);
+    assert.equal(res.json().error.type, "rate_limit_error");
+  });
+
+  test("free-tier limit becomes 429 (Anthropic shape)", async () => {
+    const res = await call("/v1/messages", {
+      method: "POST",
+      body: { model: "ratelimited-free", max_tokens: 16, messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(res.status, 429);
+    assert.equal(res.json().type, "error");
+    assert.equal(res.json().error.type, "rate_limit_error");
+  });
+
+  test("errors mid-stream are surfaced, not silently truncated", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "midstream-free", messages: [{ role: "user", content: "hi" }], stream: true },
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.text, /"type":"rate_limit_error"/);
+    assert.match(res.text, /data: \[DONE\]/);
+  });
+
+  test("unknown model → 404 with the available list", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "gpt-4o", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(res.status, 404);
+    assert.match(res.json().error.message, /Unknown model/);
+  });
+
+  test("retired model gets a migration hint", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "minimax-m2.5-free", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(res.status, 404);
+    assert.match(res.json().error.message, /no longer available/);
+  });
+
+  test("FALLBACK=1 retries the next free model after a 429", async () => {
+    await withProxy({ fallback: true }, async (baseUrl) => {
+      const res = await postJson(baseUrl, "/v1/chat/completions", {
+        model: "ratelimited-free",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.json().model, "big-pickle");
+    });
+  });
+
+  test("without FALLBACK the 429 is returned as-is", async () => {
+    await withProxy({}, async (baseUrl) => {
+      const res = await postJson(baseUrl, "/v1/chat/completions", {
+        model: "ratelimited-free",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      assert.equal(res.status, 429);
+    });
+  });
+
+  test("upstream timeout → 504", async () => {
+    const tmpKeys = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocp2-")), "keys.json");
+    fs.writeFileSync(tmpKeys, JSON.stringify(KEYS));
+    const slow = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      zenBase: app.cfg.zenBase,
+      keysFile: tmpKeys,
+      timeoutMs: 300,
+      logRequests: false,
+    });
+    const addr = await slow.listen();
+    const res = await new Promise((resolve, reject) => {
+      const body = JSON.stringify({ model: "timeout-free", messages: [{ role: "user", content: "hi" }] });
+      const req = http.request(
+        `http://127.0.0.1:${addr.port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), Authorization: `Bearer ${KEYS.tester}` },
+        },
+        (r) => {
+          const chunks = [];
+          r.on("data", (c) => chunks.push(c));
+          r.on("end", () => resolve({ status: r.statusCode, text: Buffer.concat(chunks).toString() }));
+        },
+      );
+      req.on("error", reject);
+      req.write(body);
+      req.end();
+    });
+    await slow.close();
+    assert.equal(res.status, 504);
+    assert.match(JSON.parse(res.text).error.message, /did not respond/i);
+  });
+});
