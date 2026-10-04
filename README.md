@@ -41,6 +41,13 @@ npm run doctor          # verify the free models actually answer from your machi
 
 All of them stream, take system messages and (mostly) support tool calls.
 
+The list above is what the catalog ships; the server additionally **tests every
+model against Zen at startup** and hides the ones that turn out to be
+unusable (deprecated ids that answer `400 Model is unavailable`, geoblocked
+ids that answer `RegionError`, paid-only ids). `GET /health` shows what was
+hidden and why, so `GET /v1/models` only ever lists models that really
+answered a real request.
+
 Two free ids are deliberately **not** proxied: `jev-1.13-free` (a typed-question
 API on `/zen/v1/systemone`, not chat) and anything that isn't free — the proxy
 only ever exposes models that cost $0 on Zen.
@@ -129,7 +136,7 @@ curl http://localhost:6446/v1/responses \
 
 | Method | Path | What |
 |--------|------|------|
-| `GET` | `/v1/models` | Free models + capability metadata |
+| `GET` | `/v1/models` | Free models that passed verification + capability metadata (`?all=1` = include hidden) |
 | `GET` | `/v1/models/detail` | Raw catalog entries |
 | `GET` | `/health` | Health, upstream status, impersonated opencode version |
 
@@ -246,6 +253,10 @@ WantedBy=multi-user.target
 | `ZEN_TOOLS` | `1` | Inject the builtin tool names (gate #4). `0` = send the caller's tools only |
 | `ZEN_TOOL_SET` | `bash,edit,glob,grep,read` | Which tool names to inject |
 | `ZEN_STRIP_INJECTED_TOOLS` | `1` | Hide tool calls for injected tools from callers that declared none |
+| `VERIFY_MODELS` | `1` | Probe every model against Zen before advertising it |
+| `VERIFY_INTERVAL_MS` | `1800000` | Re-probe cadence (30 min) |
+| `VERIFY_TIMEOUT_MS` | `20000` | Per-model probe timeout |
+| `VERIFY_CONCURRENCY` | `4` | Parallel probes |
 
 ## Keeping the data fresh
 
@@ -267,6 +278,41 @@ Free models rotate constantly on Zen, so the proxy does two things:
 ~ mimo-v2.5-free                     RATE LIMITED      640ms  model exists on Zen, free quota exhausted
 ✗ nemotron-3-super-free              NOT ON ZEN        310ms  model id no longer served
 ```
+
+## Only models that really work are advertised
+
+The Zen model list is not the truth: it keeps ids that answer
+`400 Model is unavailable` (deprecated), `403 RegionError` (geoblocked in
+your country) or `401/403 Model access is disabled` (paid-only). Trusting it
+means your client happily offers a model that fails on every call.
+
+So at startup — and every `VERIFY_INTERVAL_MS` (default 30 min) — the proxy
+sends one tiny request per model (`stream:true`, `max_tokens:16`, about 15
+tokens each) and classifies the answer:
+
+| Probe result | Shown in `/v1/models`? |
+|--------------|------------------------|
+| `ok` — answered | ✅ |
+| `rate_limited` — 429 / `FreeUsageLimitError` | ✅ (quota is per egress IP and shared, not the model's fault) |
+| `unavailable` — 400/404/410, deprecated, removed, paid-only | ❌ hidden |
+| `region_blocked` — `RegionError` | ❌ hidden |
+| `access_denied` — 401/403 | ❌ hidden |
+| `error` — network/timeout/5xx | ✅ kept, transient |
+| `gate_failed` — fingerprint rejected | ✅ kept + warning (affects every model, so hiding all would be a lie) |
+
+If a round hides *everything*, the proxy keeps the catalog and warns instead
+of emptying the list.
+
+```bash
+curl http://localhost:6446/health | jq .verification
+# { "enabled": true, "lastRun": "…", "hidden": ["deepseek-v4-flash-free"], "results": { "big-pickle": "ok", … } }
+
+curl -H "Authorization: Bearer KEY" "http://localhost:6446/v1/models?all=1"   # includes hidden ones + status
+```
+
+A request for a hidden model answers `404` with the reason
+(`… is not currently available (unavailable: Model is unavailable …)`)
+instead of failing deeper downstream.
 
 ## How it works
 
@@ -308,7 +354,7 @@ OC_VERSION=2.0.22 OC_RUNTIME=bun/1.4.2 node server.mjs
 ## Development
 
 ```bash
-npm test              # 28 end-to-end tests against a mock Zen upstream
+npm test              # 32 end-to-end tests against a mock Zen upstream
 npm run dev           # node --watch server.mjs
 ```
 
@@ -326,7 +372,8 @@ transparently retry on the next free model instead.
 | `FreeTierError: ... can only be used from within OpenCode` | `npm run doctor`. If it says `FREE-TIER GATE`, Zen retuned a gate — check the table above and try `ZEN_TOOL_SET` / `OC_VERSION` |
 | `RATE LIMITED` on every model | The anonymous quota is per egress IP and shared; wait, or set `ZEN_API_KEY` to a real Zen key |
 | `REGION BLOCKED` on `muse-spark-*-free` / `fledge-alpha-free` | Geoblocked at the Zen layer, nothing the proxy can do — pick another model |
-| `NOT ON ZEN` | The model rotated out. `npm run update:models` |
+| `NOT USABLE` / `NOT ON ZEN` | The model rotated out or is geoblocked. It is auto-hidden from `/v1/models`; `npm run update:models` refreshes the catalog |
+| `/v1/models` is empty or missing a model | Check `GET /health` → `verification.hidden`; set `VERIFY_MODELS=0` to see the raw catalog |
 | `UNREACHABLE` | Network/DNS. Check you can `curl https://opencode.ai/zen/v1/models` |
 
 ## Notes

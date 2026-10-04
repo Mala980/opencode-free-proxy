@@ -52,6 +52,10 @@ function startMockUpstream() {
             "timeout-free",
             "thinking-free",
             "injectcall-free",
+            "gone-free",
+            "deprecated-free",
+            "region-free",
+            "flake-free",
             "gpt-6-astra",
           ].map((id) => ({ id, object: "model", owned_by: "opencode" })),
         });
@@ -75,6 +79,18 @@ function startMockUpstream() {
       }
 
       if (url.pathname === "/v1/chat/completions") {
+        if (model === "gone-free") {
+          return json(res, 404, { error: { message: "Model not found", type: "not_found_error" } });
+        }
+        if (model === "deprecated-free") {
+          return json(res, 400, { error: { message: "Model is unavailable (deprecated)", type: "invalid_request_error" } });
+        }
+        if (model === "region-free") {
+          return json(res, 403, { error: { message: "Region not supported", type: "RegionError" } });
+        }
+        if (model === "flake-free") {
+          return json(res, 500, { error: { message: "upstream exploded" } });
+        }
         if (model === "ratelimited-free") {
           return json(res, 429, {
             error: { message: "You have exceeded your free usage limit", type: "FreeUsageLimitError" },
@@ -211,6 +227,7 @@ before(async () => {
     zenBase: `http://127.0.0.1:${upstreamPort}/v1`,
     keysFile: keyFile,
     logRequests: false,
+    verify: false,
   });
   const addr = await app.listen();
   base = `http://127.0.0.1:${addr.port}`;
@@ -289,6 +306,7 @@ async function withProxy(overrides, fn) {
     zenBase: app.cfg.zenBase,
     keysFile: tmpKeys,
     logRequests: false,
+    verify: false,
     ...overrides,
   });
   const addr = await instance.listen();
@@ -496,6 +514,78 @@ describe("Responses API", () => {
   });
 });
 
+describe("runtime verification", () => {
+  test("only models that actually answer are advertised", async () => {
+    await withProxy({ verify: true, verifyTimeoutMs: 700 }, async (baseUrl) => {
+      const res = await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${KEYS.tester}` } });
+      const ids = (await res.json()).data.map((m) => m.id);
+      assert.ok(ids.includes("big-pickle"), "a healthy model stays visible");
+      assert.ok(ids.includes("ratelimited-free"), "quota exhaustion is not the model's fault");
+      assert.ok(ids.includes("flake-free"), "a transient 5xx does not hide a model");
+      assert.ok(ids.includes("timeout-free"), "a slow model is not hidden either");
+      assert.ok(!ids.includes("gone-free"), "404 models are hidden");
+      assert.ok(!ids.includes("deprecated-free"), '"Model is unavailable" models are hidden');
+      assert.ok(!ids.includes("region-free"), "RegionError models are hidden");
+    });
+  });
+
+  test("hidden models explain themselves", async () => {
+    await withProxy({ verify: true, verifyTimeoutMs: 700 }, async (baseUrl) => {
+      const res = await postJson(baseUrl, "/v1/chat/completions", {
+        model: "gone-free",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      assert.equal(res.status, 404);
+      assert.match(res.json().error.message, /not currently available/);
+    });
+  });
+
+  test("/health and ?all=1 expose the verification results", async () => {
+    await withProxy({ verify: true, verifyTimeoutMs: 700 }, async (baseUrl) => {
+      const health = await (await fetch(`${baseUrl}/health`)).json();
+      assert.equal(health.verification.enabled, true);
+      assert.ok(health.verification.hidden.includes("region-free"));
+      assert.equal(health.verification.results["big-pickle"], "ok");
+      assert.equal(health.verification.results["ratelimited-free"], "rate_limited");
+
+      const all = await (
+        await fetch(`${baseUrl}/v1/models?all=1`, { headers: { Authorization: `Bearer ${KEYS.tester}` } })
+      ).json();
+      const byId = Object.fromEntries(all.data.map((m) => [m.id, m.verified]));
+      assert.equal(byId["deprecated-free"], "unavailable");
+      assert.equal(byId["big-pickle"], "ok");
+    });
+  });
+
+  test("a total verification blackout does not empty the list", async () => {
+    const instance = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      zenBase: "http://127.0.0.1:1/v1",
+      keysFile: (() => {
+        const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocpd-")), "keys.json");
+        fs.writeFileSync(f, JSON.stringify(KEYS));
+        return f;
+      })(),
+      logRequests: false,
+      refreshModels: false,
+      verify: true,
+      verifyTimeoutMs: 300,
+    });
+    const addr = await instance.listen();
+    try {
+      const res = await fetch(`${`http://127.0.0.1:${addr.port}`}/v1/models`, {
+        headers: { Authorization: `Bearer ${KEYS.tester}` },
+      });
+      const ids = (await res.json()).data.map((m) => m.id);
+      assert.ok(ids.length > 0, "unreachable Zen keeps the catalog visible");
+      assert.ok(ids.includes("big-pickle"));
+    } finally {
+      await instance.close();
+    }
+  });
+});
+
 describe("error handling", () => {
   test("free-tier limit becomes 429 (OpenAI shape)", async () => {
     const res = await call("/v1/chat/completions", {
@@ -649,6 +739,7 @@ describe("error handling", () => {
       keysFile: tmpKeys,
       timeoutMs: 300,
       logRequests: false,
+      verify: false,
     });
     const addr = await slow.listen();
     const res = await new Promise((resolve, reject) => {

@@ -24,6 +24,7 @@ import {
   withFingerprintToolsFlat,
   zenHeaders as zenFingerprintHeaders,
 } from "./lib/zen.mjs";
+import { HIDDEN_STATUSES, probeModel } from "./lib/probe.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -79,6 +80,12 @@ export function loadConfig(overrides = {}) {
     forceStream: process.env.ZEN_FORCE_STREAM !== "0",
     injectTools: process.env.ZEN_TOOLS !== "0",
     stripInjectedTools: process.env.ZEN_STRIP_INJECTED_TOOLS !== "0",
+    // Ask Zen which of the advertised free models actually answer, instead of
+    // trusting the model list (it keeps deprecated/region-blocked ids).
+    verify: process.env.VERIFY_MODELS !== "0",
+    verifyIntervalMs: num(process.env.VERIFY_INTERVAL_MS, 30 * 60 * 1000),
+    verifyTimeoutMs: num(process.env.VERIFY_TIMEOUT_MS, 20000),
+    verifyConcurrency: num(process.env.VERIFY_CONCURRENCY, 4),
   };
   return { ...cfg, ...overrides };
 }
@@ -820,10 +827,32 @@ export function createServer(overrides = {}) {
   const catalog = loadCatalog(cfg.modelsFile);
   const keys = loadKeys(cfg);
   const sessions = new Map();
-  const state = { liveIds: null, lastRefreshAt: 0, lastRefreshError: null, timer: null };
+  const state = {
+    liveIds: null,
+    lastRefreshAt: 0,
+    lastRefreshError: null,
+    timer: null,
+    checked: new Map(),
+    lastVerifyAt: 0,
+    verifyTimer: null,
+  };
 
-  const models = () => activeModels(catalog, state);
+  const candidates = () => activeModels(catalog, state);
+  const isHidden = (id) => HIDDEN_STATUSES.has(state.checked.get(id)?.status);
+
+  /** Only models that Zen confirmed (or merely rate limited) are served. */
+  const models = () => {
+    const all = candidates();
+    const good = all.filter((m) => !isHidden(m.id));
+    if (!good.length && all.length) {
+      // Never blank the whole list on a bad verification round.
+      console.log("[VERIFY] no model passed verification — serving the catalog anyway");
+      return all;
+    }
+    return good;
+  };
   const findModel = (id) => models().find((m) => m.id === id) || null;
+  const findCandidate = (id) => candidates().find((m) => m.id === id) || null;
 
   function sessionFor(user) {
     const now = Date.now();
@@ -844,6 +873,38 @@ export function createServer(overrides = {}) {
     } catch (err) {
       state.lastRefreshError = err.message;
       console.log(`[MODELS] Could not refresh from Zen (${err.message}) — using bundled catalog`);
+    }
+  }
+
+  async function verify() {
+    const queue = candidates().filter((m) => (m.endpoint || "chat") !== "systemone");
+    const worker = async () => {
+      for (let model = queue.shift(); model; model = queue.shift()) {
+        const result = await probeModel({
+          zenBase: cfg.zenBase,
+          userAgent: cfg.userAgent,
+          zenKey: cfg.zenKey,
+          client: cfg.client,
+          project: cfg.project,
+          model,
+          timeoutMs: cfg.verifyTimeoutMs,
+        });
+        state.checked.set(model.id, result);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.max(1, Math.min(cfg.verifyConcurrency, queue.length || 1)) }, worker),
+    );
+    state.lastVerifyAt = Date.now();
+
+    const tally = {};
+    for (const result of state.checked.values()) tally[result.status] = (tally[result.status] || 0) + 1;
+    const summary = Object.entries(tally)
+      .map(([status, count]) => `${count} ${status}`)
+      .join(", ");
+    console.log(`[VERIFY] ${summary || "nothing checked"}`);
+    for (const [id, result] of state.checked) {
+      if (HIDDEN_STATUSES.has(result.status)) console.log(`[VERIFY] hidden ${id}: ${result.detail}`);
     }
   }
 
@@ -980,6 +1041,12 @@ export function createServer(overrides = {}) {
             lastRefresh: state.lastRefreshAt ? new Date(state.lastRefreshAt).toISOString() : null,
             error: state.lastRefreshError,
           },
+          verification: {
+            enabled: cfg.verify,
+            lastRun: state.lastVerifyAt ? new Date(state.lastVerifyAt).toISOString() : null,
+            hidden: [...state.checked].filter(([, r]) => HIDDEN_STATUSES.has(r.status)).map(([id]) => id),
+            results: Object.fromEntries([...state.checked].map(([id, r]) => [id, r.status])),
+          },
           endpoints: {
             openai: "POST /v1/chat/completions",
             anthropic: "POST /v1/messages",
@@ -1003,7 +1070,7 @@ export function createServer(overrides = {}) {
       }
 
       if (route === "GET /v1/models") {
-        const list = models();
+        const list = url.searchParams.get("all") === "1" ? candidates() : models();
         sendJson(res, 200, {
           object: "list",
           data: list.map((m) => ({
@@ -1019,6 +1086,7 @@ export function createServer(overrides = {}) {
             supports_reasoning: Boolean(m.reasoning),
             supports_attachments: Boolean(m.attachment),
             deprecation: m.status === "deprecated" ? "deprecated" : null,
+            verified: state.checked.get(m.id)?.status || null,
           })),
         });
         return;
@@ -1046,6 +1114,16 @@ export function createServer(overrides = {}) {
 
         let model = findModel(body.model);
         if (!model) {
+          const known = findCandidate(body.model);
+          if (known) {
+            const check = state.checked.get(known.id);
+            sendError(res, 404, {
+              message: `${known.id} is not currently available (${check?.status || "unverified"}: ${check?.detail || "not verified yet"})`,
+              type: "invalid_request_error",
+              code: "model_unavailable",
+            });
+            return;
+          }
           const info = unknownModelError(body.model);
           sendError(res, 404, { message: info.message, type: info.type, code: info.code });
           return;
@@ -1154,9 +1232,11 @@ export function createServer(overrides = {}) {
     keys,
     state,
     models,
-    refresh,
+    candidates,
+    verify,
     close: async () => {
       if (state.timer) clearInterval(state.timer);
+      if (state.verifyTimer) clearInterval(state.verifyTimer);
       await new Promise((resolve) => server.close(resolve));
     },
     listen: async () => {
@@ -1164,6 +1244,11 @@ export function createServer(overrides = {}) {
         await refresh();
         state.timer = setInterval(refresh, cfg.refreshMs);
         state.timer.unref?.();
+      }
+      if (cfg.verify) {
+        await verify().catch((err) => console.log(`[VERIFY] failed: ${err.message}`));
+        state.verifyTimer = setInterval(() => verify().catch(() => {}), cfg.verifyIntervalMs);
+        state.verifyTimer.unref?.();
       }
       await new Promise((resolve) => server.listen(cfg.port, cfg.host, resolve));
       return server.address();
@@ -1187,6 +1272,10 @@ export async function startServer(overrides = {}) {
   }
   if (!app.state.liveIds) {
     console.log("  note        Zen model list not reachable — serving the bundled catalog");
+  }
+  const hidden = [...app.state.checked].filter(([, r]) => HIDDEN_STATUSES.has(r.status));
+  if (hidden.length) {
+    console.log(`  hidden      ${hidden.map(([id, r]) => `${id} (${r.detail})`).join(" · ")}`);
   }
   return app;
 }

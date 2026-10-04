@@ -19,6 +19,7 @@
   },
   "files": [
     "server.mjs",
+    "lib/",
     "models.json",
     "scripts/",
     "README.md"

@@ -16,15 +16,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  aggregateToCompletion,
-  applyChunk,
-  generateSessionId,
-  newAggregate,
-  withFingerprintTools,
-  withFingerprintToolsFlat,
-  zenHeaders,
-} from "../lib/zen.mjs";
+import { classifyProbe, probeModel } from "../lib/probe.mjs";
+import { generateSessionId, zenHeaders } from "../lib/zen.mjs";
 
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const MODELS_FILE = process.env.MODELS_FILE || path.join(HERE, "models.json");
@@ -65,90 +58,34 @@ async function request(url, headers, body, timeoutMs) {
   }
 }
 
-/** Zen always streams (the free tier 403s otherwise), so read SSE back. */
-function replyFrom(text) {
-  if (text.includes("data:")) {
-    const agg = newAggregate("");
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        applyChunk(agg, JSON.parse(payload));
-      } catch {
-        /* ignore keep-alives */
-      }
-    }
-    if (agg.content) return agg.content;
-    if (agg.toolCalls.length) return aggregateToCompletion(agg).choices[0].message.tool_calls?.[0]?.function?.name || "";
-    return "";
-  }
-  try {
-    const data = JSON.parse(text);
-    return (
-      data?.choices?.[0]?.message?.content ||
-      data?.content?.[0]?.text ||
-      data?.output?.map?.((o) => o?.content?.map?.((c) => c?.text).join("")).join("") ||
-      data?.output_text ||
-      ""
-    );
-  } catch {
-    return text;
-  }
-}
-
-function verdict(status, text) {
-  if (status === 200) return { ok: true, label: "OK" };
-  const lower = String(text).toLowerCase();
-  if (status === 429 || lower.includes("usage limit") || lower.includes("rate limit"))
-    return { ok: true, label: "RATE LIMITED", note: "model exists on Zen, free quota exhausted" };
-  if (lower.includes("free tier") || lower.includes("freetiererror"))
-    return {
-      ok: false,
-      label: "FREE-TIER GATE",
-      note: "Zen did not accept the client fingerprint (see README → Free-tier gates)",
-    };
-  if (lower.includes("region")) return { ok: false, label: "REGION BLOCKED", note: "not served in your region" };
-  if (status === 0) return { ok: false, label: "UNREACHABLE" };
-  if (status === 401 || status === 403) return { ok: false, label: "AUTH REJECTED", note: "Zen refused the request" };
-  if (status === 404) return { ok: false, label: "NOT ON ZEN", note: "model id no longer served" };
-  return { ok: false, label: `HTTP ${status}` };
-}
-
-function buildBody(model, isResponses) {
-  if (isResponses) {
-    const body = {
-      model: model.id,
-      input: "Reply with exactly: OK",
-      max_output_tokens: 32,
-      stream: true,
-      store: false,
-    };
-    withFingerprintToolsFlat(body);
-    return body;
-  }
-  const body = {
-    model: model.id,
-    messages: [{ role: "user", content: "Reply with exactly: OK" }],
-    max_tokens: 32,
-    stream: true,
-  };
-  withFingerprintTools(body);
-  return body;
-}
+const LABELS = {
+  ok: { ok: true, label: "OK" },
+  rate_limited: { ok: true, label: "RATE LIMITED", note: "model exists on Zen, free quota exhausted" },
+  unavailable: { ok: false, label: "NOT USABLE", note: "Zen refuses it (deprecated / removed / paid-only)" },
+  region_blocked: { ok: false, label: "REGION BLOCKED", note: "not served in your region" },
+  access_denied: { ok: false, label: "ACCESS DENIED", note: "not free for this credential" },
+  gate_failed: {
+    ok: false,
+    label: "FREE-TIER GATE",
+    note: "Zen did not accept the client fingerprint (see README -> Free-tier gates)",
+  },
+  error: { ok: false, label: "ERROR", note: "transient / network" },
+};
 
 async function probeZen(model) {
-  const isResponses = model.endpoint === "responses";
-  const url = `${ZEN_BASE}/${isResponses ? "responses" : "chat/completions"}`;
-  const headers = zenHeaders(
-    { userAgent: USER_AGENT, zenKey: process.env.ZEN_API_KEY || "public", client: "cli", project: "global" },
-    generateSessionId(),
-  );
-  const res = await request(url, headers, buildBody(model, isResponses), TIMEOUT);
-  return { ...res, ...verdict(res.status, res.text) };
+  const result = await probeModel({
+    zenBase: ZEN_BASE,
+    userAgent: USER_AGENT,
+    zenKey: process.env.ZEN_API_KEY || "public",
+    client: "cli",
+    project: "global",
+    model,
+    timeoutMs: TIMEOUT,
+  });
+  return { ...result, ...(LABELS[result.status] || { ok: false, label: result.status }), text: result.detail };
 }
 
+/** Goes through the proxy: a plain client-shaped request, no fingerprint. */
 async function probeProxy(model, server, key) {
   const isResponses = model.endpoint === "responses";
   const url = `${server.replace(/\/+$/, "")}/v1/${isResponses ? "responses" : "chat/completions"}`;
@@ -156,7 +93,8 @@ async function probeProxy(model, server, key) {
     ? { model: model.id, input: "Reply with exactly: OK", max_output_tokens: 32 }
     : { model: model.id, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 32 };
   const res = await request(url, { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, body, TIMEOUT);
-  return { ...res, ...verdict(res.status, res.text) };
+  const { status, detail } = classifyProbe(res.status, res.text);
+  return { ...res, status, detail, ...(LABELS[status] || { ok: false, label: status }) };
 }
 
 function readKey() {
@@ -199,13 +137,12 @@ async function main() {
   let working = 0;
   for (const model of models) {
     const result = SERVER ? await probeProxy(model, SERVER, key) : await probeZen(model);
-    const reply = replyFrom(result.text).replace(/\s+/g, " ").trim().slice(0, 40);
     const mark = result.ok ? (result.label === "OK" ? "✓" : "~") : "✗";
     if (result.ok) working += 1;
     console.log(
-      `${mark} ${model.id.padEnd(34)} ${result.label.padEnd(16)} ${String(result.ms).padStart(6)}ms  ${result.note || reply}`,
+      `${mark} ${model.id.padEnd(34)} ${result.label.padEnd(16)} ${String(result.ms).padStart(6)}ms  ${result.note || String(result.detail).slice(0, 40)}`,
     );
-    if (VERBOSE && !result.ok) console.log(`    ${result.text.slice(0, 400)}`);
+    if (VERBOSE && !result.ok) console.log(`    ${result.detail}`);
   }
 
   console.log(`\n${working}/${models.length} models usable${SERVER ? " through the proxy" : " on Zen"}.`);
