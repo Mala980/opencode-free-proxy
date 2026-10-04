@@ -29,7 +29,7 @@ Mirrors upstream's style guide where it applies to plain JS:
 ## Tests
 
 ```bash
-npm test                 # node --test, 41 tests, no network
+npm test                 # node --test, 62 tests, no network
 npm run lint             # oxlint
 npm run doctor           # live check against Zen (needs network)
 ```
@@ -40,6 +40,7 @@ Layout:
 |------|--------|
 | `test/proxy.test.mjs` | end-to-end against a **mock Zen**: OpenAI/Anthropic/Responses formats, streaming, error mapping, fallback, runtime verification |
 | `test/fingerprint.test.mjs` | **contract**: what we send must equal what the real CLI sends (from `test/fixtures/opencode-cli-*.json`) |
+| `test/models-dev.test.mjs` | **contract**: the models.dev reader against real provider files (from `test/fixtures/models-dev-toml/`) |
 
 Two rules for tests:
 
@@ -54,13 +55,20 @@ Two rules for tests:
 The free tier is a moving target. In order of freshness:
 
 1. `npm run doctor` — probes every model live, reports which ones work.
-2. `npm run update:models` — rewrites `models.json` from Zen's live list
-   (`--check` exits non-zero when the catalog is stale; CI runs it daily).
+2. `npm run update:models` — rewrites `models.json` from **models.dev**
+   (the catalogue opencode ships, free = every price is zero) crossed with
+   Zen's live list (`--check` exits non-zero when the catalog is stale; CI
+   runs it daily).
 3. `npm run capture:fixture` — re-records the official client's request after
    an opencode upgrade. Do this whenever `OC_VERSION` is bumped.
 
 `models.json` is the data: model ids, endpoint, context window, tool/reasoning
 support, plus a `retired` map explaining what happened to removed ids.
+
+`lib/models-dev.mjs` reads that catalogue: `models.dev/api.json` first, and the
+same files in `anomalyco/models.dev` over the GitHub API when that host is
+blocked. It contains a small TOML reader (the subset models.dev uses) — keep it
+dependency-free, and validate changes against the fixtures before shipping.
 
 ## What the proxy must keep doing
 

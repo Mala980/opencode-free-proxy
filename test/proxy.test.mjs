@@ -4,6 +4,7 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "../server.mjs";
 
 /**
@@ -779,5 +780,139 @@ describe("error handling", () => {
     await slow.close();
     assert.equal(res.status, 504);
     assert.match(JSON.parse(res.text).error.message, /did not respond/i);
+  });
+});
+
+describe("models.dev as the free-model source", () => {
+  const API_FIXTURE = JSON.parse(
+    fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "models-dev-api.json"), "utf8"),
+  );
+
+  function startModelsDevMock(json) {
+    const server = http.createServer((req, res) => {
+      const text = JSON.stringify(json);
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) });
+      res.end(text);
+    });
+    return {
+      listen: () => new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server.address().port))),
+      close: () => new Promise((resolve) => server.close(resolve)),
+    };
+  }
+
+  function withModelsDev(json, overrides, fn) {
+    const mock = startModelsDevMock(json);
+    const tmpKeys = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocpm-")), "keys.json");
+    fs.writeFileSync(tmpKeys, JSON.stringify(KEYS));
+    return mock.listen().then(async (port) => {
+      const instance = createServer({
+        port: 0,
+        host: "127.0.0.1",
+        zenBase: app.cfg.zenBase,
+        keysFile: tmpKeys,
+        logRequests: false,
+        verify: false,
+        modelsDevUrl: `http://127.0.0.1:${port}/api.json`,
+        ...overrides,
+      });
+      const addr = await instance.listen();
+      await instance.ready();
+      try {
+        return await fn(`http://127.0.0.1:${addr.port}`, instance);
+      } finally {
+        await instance.close();
+        await mock.close();
+      }
+    });
+  }
+
+  const listModels = async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${KEYS.tester}` } });
+    return (await res.json()).data;
+  };
+
+  test("the free list comes from models.dev's price tables", async () => {
+    // Split the bundled catalog in two: models.dev prices the first ten at
+    // zero and the rest above zero. Only the free half may be advertised.
+    const ids = app.catalog.models.filter((m) => m.supported !== false).map((m) => m.id);
+    const zero = ids.slice(0, 10);
+    const priced = ids.slice(10);
+    const models = {};
+    for (const id of zero) models[id] = { name: id, cost: { input: 0, output: 0 } };
+    for (const id of priced) models[id] = { name: id, cost: { input: 1, output: 2 } };
+    models["glm-4.7-free"] = API_FIXTURE.opencode.models["glm-4.7-free"];
+
+    await withModelsDev({ opencode: { models } }, { refreshSource: "models-dev" }, async (baseUrl) => {
+      const served = (await listModels(baseUrl)).map((m) => m.id).sort();
+      assert.deepEqual(served, [...zero, "glm-4.7-free"].sort());
+      for (const id of priced) {
+        assert.ok(!served.includes(id), `${id} costs money according to models.dev`);
+      }
+    });
+  });
+
+  test("new free models arrive with the metadata opencode publishes", async () => {
+    await withModelsDev(API_FIXTURE, { refreshSource: "models-dev" }, async (baseUrl) => {
+      const byId = Object.fromEntries((await listModels(baseUrl)).map((m) => [m.id, m]));
+      assert.equal(byId["glm-4.7-free"].display_name, "GLM-4.7 Free");
+      assert.equal(byId["glm-4.7-free"].context_window, 204800);
+      assert.equal(byId["glm-4.7-free"].max_output_tokens, 131072);
+      assert.equal(byId["glm-4.7-free"].deprecation, "deprecated");
+      assert.equal(byId["big-pickle"].context_window, 200000);
+    });
+  });
+
+  test("a model models.dev prices above zero is dropped, even when Zen lists it", async () => {
+    const priced = {
+      opencode: {
+        models: {
+          "big-pickle": API_FIXTURE.opencode.models["big-pickle"],
+          "space-bunny-free": { name: "Space Bunny Free", cost: { input: 1, output: 2 }, limit: { context: 1048576 } },
+        },
+      },
+    };
+    await withModelsDev(priced, { refreshSource: "both" }, async (baseUrl) => {
+      const ids = (await listModels(baseUrl)).map((m) => m.id);
+      assert.ok(ids.includes("big-pickle"), "still free upstream");
+      assert.ok(!ids.includes("space-bunny-free"), "models.dev says it costs money now");
+    });
+  });
+
+  test("models we switched off stay hidden even if models.dev calls them free", async () => {
+    const withDisabled = {
+      opencode: {
+        models: {
+          ...API_FIXTURE.opencode.models,
+          "jev-1.13-free": { name: "Jev 1.13 Free", cost: { input: 0, output: 0 } },
+          "qwen3.6-plus-free": { name: "Qwen3.6 Plus Free", cost: { input: 0, output: 0 } },
+        },
+      },
+    };
+    await withModelsDev(withDisabled, { refreshSource: "models-dev" }, async (baseUrl) => {
+      const ids = (await listModels(baseUrl)).map((m) => m.id);
+      assert.ok(!ids.includes("jev-1.13-free"), "supported:false is respected");
+      assert.ok(!ids.includes("qwen3.6-plus-free"), "retired ids stay retired");
+    });
+  });
+
+  test("/health reports where the free list came from", async () => {
+    await withModelsDev(API_FIXTURE, { refreshSource: "models-dev" }, async (baseUrl) => {
+      const health = await (await fetch(`${baseUrl}/health`)).json();
+      assert.equal(health.modelsDev.enabled, true);
+      assert.equal(health.modelsDev.provider, "opencode");
+      assert.equal(health.modelsDev.live, true);
+      assert.equal(health.modelsDev.free, 5);
+      assert.equal(health.modelsDev.error, null);
+    });
+  });
+
+  test("an unreachable models.dev leaves the bundled catalog alone", async () => {
+    await withModelsDev(API_FIXTURE, { refreshSource: "models-dev", modelsDevUrl: "http://127.0.0.1:1/api.json", modelsDevTimeoutMs: 300 }, async (baseUrl) => {
+      const health = await (await fetch(`${baseUrl}/health`)).json();
+      assert.equal(health.modelsDev.live, false);
+      assert.ok(health.modelsDev.error);
+      const ids = (await listModels(baseUrl)).map((m) => m.id);
+      assert.ok(ids.includes("big-pickle") && ids.includes("space-bunny-free"), "catalog survives");
+    });
   });
 });

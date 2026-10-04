@@ -244,6 +244,10 @@ WantedBy=multi-user.target
 | `OC_USER_AGENT` | `opencode/<ver> ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14` | Full UA override |
 | `OC_CLIENT` / `OC_PROJECT` | `cli` / `global` | `x-opencode-client` / `x-opencode-project` values |
 | `REFRESH_MODELS` | `1` | `0` = never call Zen's model list |
+| `REFRESH_SOURCE` | `zen` | Where the free list comes from: `zen` (live `/models`), `models-dev` (the catalogue opencode ships) or `both` |
+| `MODELS_DEV_API_URL` | `https://models.dev/api.json` | Override the models.dev endpoint (proxy/mirror) |
+| `MODELS_DEV_PROVIDER` | `opencode` | Provider id inside models.dev |
+| `MODELS_DEV_TIMEOUT_MS` | `20000` | models.dev read timeout |
 | `REFRESH_INTERVAL_MS` | `21600000` | Re-sync cadence (6h) |
 | `SESSION_TTL_MS` | `1800000` | Session rotation (30m) |
 | `LOG_REQUESTS` | `1` | `0` = quiet |
@@ -259,17 +263,47 @@ WantedBy=multi-user.target
 | `VERIFY_CONCURRENCY` | `4` | Parallel probes |
 | `VERIFY_STARTUP_TIMEOUT_MS` | `60000` | How long startup waits for the first probe round — verification never blocks the port |
 
-## Keeping the data fresh
+## Where the free list comes from
 
-Free models rotate constantly on Zen, so the proxy does two things:
+opencode does not hardcode a model list: it ships the catalogue published at
+[models.dev](https://models.dev) — the `opencode` (Zen) provider, refreshed
+daily by upstream's own `models-snapshot` workflow. This proxy reads the very
+same catalogue, so "free" means **every price in models.dev's `[cost]` table is
+zero**, not "the id happens to end in `-free`".
 
-1. **On start (and every 6h)** it fetches `https://opencode.ai/zen/v1/models`
-   and only exposes bundled models that Zen still lists, plus any *new* free id
-   it finds. If Zen is unreachable it falls back to the bundled catalog.
-2. **`npm run update:models`** rewrites `models.json` from that live list,
-   preserving curated metadata and retiring ids that disappeared.
-   `npm run update:models -- --check` exits non-zero when the bundled catalog
-   is stale (good for a cron job / CI).
+| Source | Decides |
+|--------|---------|
+| `https://models.dev/api.json` → provider `opencode` | which models are **free**, plus capability metadata (context window, tool call, attachments, modalities, `deprecated`) |
+| `https://opencode.ai/zen/v1/models` | which of those ids Zen **actually serves** right now |
+| probe at startup (see below) | which of them answer **for you**, from **your** network |
+
+`REFRESH_SOURCE` picks the runtime mix: `zen` (default), `models-dev`, or
+`both`. With `both`, an id must be on Zen *and* priced at zero upstream. If
+models.dev is unreachable the reader falls back to the same files in
+[`anomalyco/models.dev`](https://github.com/anomalyco/models.dev), which is
+what `api.json` is generated from.
+
+`npm run update:models` rewrites `models.json` from both sources — keeping
+curated notes, refreshing capabilities, retiring ids that disappeared and
+hiding ids that are no longer free:
+
+```
+models.dev (models.dev/api.json): 118 opencode models, 37 priced at zero
+Zen lists 86 models.
+Kept 13 bundled models, added 0 new, dropped 0, priced out 0.
+```
+
+`npm run update:models -- --check` exits non-zero when a value upstream
+changed (good for a cron job / CI — this repo runs it daily).
+
+At startup (and every `REFRESH_INTERVAL_MS`, 6h) the proxy re-reads
+`REFRESH_SOURCE` and applies the same rules; if a source is unreachable the
+bundled catalog is used and `/health` says why.
+
+Note that models.dev marks 26 of the 37 free Zen models `deprecated` — that
+is upstream telling you a model is legacy (superseded, still served), **not**
+that it is gone. The proxy surfaces it (`deprecation: "deprecated"` in
+`/v1/models`) and lets the live probe decide whether to hide it.
 
 `npm run doctor` then probes every model end-to-end and prints a table:
 
@@ -371,7 +405,7 @@ OC_VERSION=2.0.22 OC_RUNTIME=bun/1.4.2 node server.mjs
 ## Development
 
 ```bash
-npm test              # 41 tests, no network, ~3s
+npm test              # 62 tests, no network, ~4s
 npm run lint          # oxlint (the same linter anomalyco/opencode uses)
 npm run dev           # node --watch server.mjs
 npm run capture:fixture -- --bin $(command -v opencode)   # re-record the CLI's request
@@ -409,7 +443,8 @@ transparently retry on the next free model instead.
 | `RATE LIMITED` on every model | The anonymous quota is per egress IP and shared; wait, or set `ZEN_API_KEY` to a real Zen key |
 | `REGION BLOCKED` on `muse-spark-*-free` / `fledge-alpha-free` | Geoblocked at the Zen layer, nothing the proxy can do — pick another model |
 | `NOT USABLE` / `NOT ON ZEN` | The model rotated out or is geoblocked. It is auto-hidden from `/v1/models`; `npm run update:models` refreshes the catalog |
-| `/v1/models` is empty or missing a model | Check `GET /health` → `verification.hidden`; set `VERIFY_MODELS=0` to see the raw catalog |
+| `/v1/models` is empty or missing a model | Check `GET /health` → `verification.hidden` and `modelsDev.error`; set `VERIFY_MODELS=0` to see the raw catalog |
+| A model vanished after enabling `REFRESH_SOURCE=both` | models.dev now prices it above zero (or does not publish it). Check `/health` → `modelsDev.free` |
 | The log stops after `[MODELS] Refreshed from Zen: …` | Not stuck — the probe round is running in the background (up to `VERIFY_STARTUP_TIMEOUT_MS`). The port is already open; watch `GET /health` → `verification.running`, or skip it with `VERIFY_MODELS=0` |
 | Startup waits a minute before printing `models` | Zen is slow to answer probes. Lower `VERIFY_TIMEOUT_MS` / `VERIFY_STARTUP_TIMEOUT_MS`, or raise `VERIFY_CONCURRENCY` |
 | `UNREACHABLE` | Network/DNS. Check you can `curl https://opencode.ai/zen/v1/models` |

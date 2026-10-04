@@ -25,6 +25,7 @@ import {
   zenHeaders,
 } from "./lib/zen.mjs";
 import { HIDDEN_STATUSES, probeModel } from "./lib/probe.mjs";
+import { fetchFreeModels } from "./lib/models-dev.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +67,12 @@ export function loadConfig(overrides = {}) {
     modelsFile: process.env.MODELS_FILE || path.join(HERE, "models.json"),
     refreshModels: process.env.REFRESH_MODELS !== "0",
     refreshMs: num(process.env.REFRESH_INTERVAL_MS, 6 * 60 * 60 * 1000),
+    // Where the free-model list comes from: "zen" (live /models, the default),
+    // "models-dev" (the catalogue opencode ships) or "both".
+    refreshSource: (process.env.REFRESH_SOURCE || "zen").toLowerCase(),
+    modelsDevUrl: process.env.MODELS_DEV_API_URL || "https://models.dev/api.json",
+    modelsDevProvider: process.env.MODELS_DEV_PROVIDER || "opencode",
+    modelsDevTimeoutMs: num(process.env.MODELS_DEV_TIMEOUT_MS, 20000),
     sessionTtlMs: num(process.env.SESSION_TTL_MS, 30 * 60 * 1000),
     maxBodyBytes: num(process.env.MAX_BODY_BYTES, 12 * 1024 * 1024),
     publicModels: process.env.PUBLIC_MODELS === "1",
@@ -237,34 +244,70 @@ function prettifyId(id) {
     .replace(/\bV(\d)/, "V$1");
 }
 
+/**
+ * Curated metadata wins, models.dev fills in the rest: the bundled catalog
+ * keeps our hand-written notes while the numbers (context window, tool
+ * support, modalities …) follow the catalogue opencode publishes.
+ */
+function mergeWithModelsDev(curated, fromModelsDev) {
+  const merged = { ...fromModelsDev, ...curated };
+  for (const key of ["context", "input", "output"]) {
+    if (!Number.isFinite(merged[key]) && Number.isFinite(fromModelsDev[key])) merged[key] = fromModelsDev[key];
+  }
+  if (fromModelsDev.deprecated) merged.deprecated = true;
+  return merged;
+}
+
 function activeModels(catalog, state) {
   const curated = catalog.models.filter((m) => m && m.id && m.supported !== false);
+  const fromModelsDev = state.modelsDev || new Map();
   const out = [];
   const seen = new Set();
-  if (state.liveIds) {
-    for (const m of curated) {
-      if (!state.liveIds.has(m.id)) continue;
-      out.push(m);
-      seen.add(m.id);
-    }
-    // Anything new that showed up on Zen and looks like a free model.
-    for (const id of state.liveIds) {
-      if (seen.has(id) || !looksFree(id)) continue;
-      out.push({
-        id,
-        name: prettifyId(id),
-        endpoint: "chat",
-        reasoning: true,
-        tool_call: true,
-        attachment: false,
-        dynamic: true,
-        notes: "Discovered on Zen after the catalog was last updated.",
-      });
-      seen.add(id);
-    }
-    return out;
+  // Ids we deliberately switched off or retired stay off, even when models.dev
+  // still lists them as free.
+  const blocked = new Set([
+    ...catalog.models.filter((m) => m?.supported === false).map((m) => m.id),
+    ...Object.keys(catalog.retired || {}),
+  ]);
+
+  // Zen decides what is actually served, models.dev decides what is free
+  // (a real price table instead of an "-free" suffix guess). models.dev only
+  // gets a say about ids it actually publishes — an unknown id keeps the
+  // curated / suffix decision.
+  const onZen = (id) => !state.liveIds || state.liveIds.has(id);
+  const isFree = (id) => !state.freeIds || state.freeIds.has(id) || !state.devIds.has(id);
+
+  for (const model of curated) {
+    if (!onZen(model.id) || !isFree(model.id)) continue;
+    const upstream = fromModelsDev.get(model.id);
+    out.push(upstream ? mergeWithModelsDev(model, upstream) : model);
+    seen.add(model.id);
   }
-  return curated.slice();
+
+  // Free models that only models.dev knows about, with its real metadata.
+  for (const [id, entry] of fromModelsDev) {
+    if (seen.has(id) || blocked.has(id) || !onZen(id)) continue;
+    out.push({ ...entry, dynamic: true, unverified: true });
+    seen.add(id);
+  }
+
+  // Zen-only discovery, for ids models.dev has not published yet.
+  for (const id of state.liveIds || []) {
+    if (seen.has(id) || blocked.has(id) || !looksFree(id) || !isFree(id)) continue;
+    out.push({
+      id,
+      name: prettifyId(id),
+      endpoint: "chat",
+      reasoning: true,
+      tool_call: true,
+      attachment: false,
+      dynamic: true,
+      notes: "Discovered on Zen after the catalog was last updated.",
+    });
+    seen.add(id);
+  }
+
+  return out;
 }
 
 async function fetchLiveModels(cfg) {
@@ -833,6 +876,11 @@ export function createServer(overrides = {}) {
   const sessions = new Map();
   const state = {
     liveIds: null,
+    freeIds: null,
+    devIds: null,
+    modelsDev: null,
+    lastModelsDevAt: 0,
+    lastModelsDevError: null,
     lastRefreshAt: 0,
     lastRefreshError: null,
     timer: null,
@@ -870,17 +918,47 @@ export function createServer(overrides = {}) {
     return session.id;
   }
 
-  async function refresh() {
+  async function refreshZen() {
+    if (cfg.refreshSource === "models-dev") return;
     try {
       state.liveIds = await fetchLiveModels(cfg);
       state.lastRefreshAt = Date.now();
       state.lastRefreshError = null;
-      const known = models().length;
-      console.log(`[MODELS] Refreshed from Zen: ${state.liveIds.size} ids upstream, ${known} free models exposed`);
+      console.log(`[MODELS] Zen lists ${state.liveIds.size} ids, ${models().length} free models exposed`);
     } catch (err) {
       state.lastRefreshError = err.message;
       console.log(`[MODELS] Could not refresh from Zen (${err.message}) — using bundled catalog`);
     }
+  }
+
+  async function refreshModelsDev() {
+    if (cfg.refreshSource === "zen") return;
+    try {
+      const { models: free, source, total, known } = await fetchFreeModels({
+        url: cfg.modelsDevUrl,
+        provider: cfg.modelsDevProvider,
+        timeoutMs: cfg.modelsDevTimeoutMs,
+        log: (line) => console.log(line),
+      });
+      state.modelsDev = new Map(free.map((m) => [m.id, m]));
+      state.freeIds = new Set(free.map((m) => m.id));
+      state.devIds = new Set(known);
+      state.lastModelsDevAt = Date.now();
+      state.lastModelsDevError = null;
+      const deprecated = free.filter((m) => m.deprecated).length;
+      console.log(
+        `[MODELS] models.dev (${source}) reports ${total} ${cfg.modelsDevProvider} models, ${free.length} free` +
+          (deprecated ? ` (${deprecated} marked deprecated upstream)` : ""),
+      );
+    } catch (err) {
+      state.lastModelsDevError = err.message;
+      console.log(`[MODELS] Could not read models.dev (${err.message}) — keeping the bundled catalog`);
+    }
+  }
+
+  async function refresh() {
+    await refreshZen();
+    await refreshModelsDev();
   }
 
   /**
@@ -1083,6 +1161,14 @@ export function createServer(overrides = {}) {
             lastRefresh: state.lastRefreshAt ? new Date(state.lastRefreshAt).toISOString() : null,
             error: state.lastRefreshError,
           },
+          modelsDev: {
+            enabled: cfg.refreshSource !== "zen",
+            provider: cfg.modelsDevProvider,
+            live: Boolean(state.freeIds),
+            free: state.freeIds ? state.freeIds.size : null,
+            lastRefresh: state.lastModelsDevAt ? new Date(state.lastModelsDevAt).toISOString() : null,
+            error: state.lastModelsDevError,
+          },
           verification: {
             enabled: cfg.verify,
             running: state.verifying,
@@ -1129,7 +1215,7 @@ export function createServer(overrides = {}) {
             supports_tools: Boolean(m.tool_call),
             supports_reasoning: Boolean(m.reasoning),
             supports_attachments: Boolean(m.attachment),
-            deprecation: m.status === "deprecated" ? "deprecated" : null,
+            deprecation: m.deprecated || m.status === "deprecated" ? "deprecated" : null,
             verified: state.checked.get(m.id)?.status || null,
           })),
         });
