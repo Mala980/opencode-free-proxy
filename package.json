@@ -11,8 +11,10 @@
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
     "test": "node --test test/*.test.mjs",
+    "lint": "oxlint .",
     "doctor": "node scripts/doctor.mjs",
-    "update:models": "node scripts/update-models.mjs"
+    "update:models": "node scripts/update-models.mjs",
+    "capture:fixture": "node scripts/capture-cli-fixture.mjs"
   },
   "engines": {
     "node": ">=18.17"
@@ -24,5 +26,8 @@
     "scripts/",
     "README.md"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "oxlint": "^1.86.0"
+  }
 }

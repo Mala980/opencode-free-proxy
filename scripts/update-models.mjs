@@ -80,13 +80,12 @@ async function main() {
 
   const kept = [];
   const removed = [];
-  const retired = { ...(catalog.retired || {}) };
+  const retired = { ...catalog.retired };
 
   for (const model of catalog.models || []) {
     if (!model?.id) continue;
     if (live.has(model.id)) {
-      const { removedAt, ...rest } = model;
-      kept.push(rest);
+      kept.push(model);
     } else {
       removed.push(model.id);
       if (model.supported === false) {

@@ -1,0 +1,66 @@
+name: models-snapshot
+
+# Upstream (anomalyco/opencode) refreshes its models snapshot on a daily cron.
+# Same idea here: check the bundled catalog against the live Zen list once a
+# day and raise an issue when a model appeared or disappeared.
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Diff catalog against Zen
+        id: diff
+        continue-on-error: true
+        run: npm run update:models -- --check
+
+      - name: Open or refresh an issue when the catalog is stale
+        if: steps.diff.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = "catalog: free models on Zen changed";
+            const body = [
+              "`npm run update:models -- --check` failed — at least one bundled model is gone",
+              "from Zen, or a new free model showed up.",
+              "",
+              `Run: \`npm run update:models\` then \`npm run doctor\`.`,
+              "",
+              `Detected ${new Date().toISOString()} on \`${context.ref}\`.`,
+            ].join("\n");
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "models",
+            });
+            if (existing.data.length) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ["models"],
+              });
+            }

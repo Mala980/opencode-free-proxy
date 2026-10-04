@@ -22,7 +22,7 @@ import {
   newAggregate,
   withFingerprintTools,
   withFingerprintToolsFlat,
-  zenHeaders as zenFingerprintHeaders,
+  zenHeaders,
 } from "./lib/zen.mjs";
 import { HIDDEN_STATUSES, probeModel } from "./lib/probe.mjs";
 
@@ -324,8 +324,8 @@ function mapUpstreamError(status, data, raw) {
 }
 
 // ── Zen request ────────────────────────────────────────────────────
-function zenHeaders(cfg, sessionId) {
-  return zenFingerprintHeaders(
+function buildZenHeaders(cfg, sessionId) {
+  return zenHeaders(
     { userAgent: cfg.userAgent, zenKey: cfg.zenKey, client: cfg.client, project: cfg.project },
     sessionId,
   );
@@ -380,7 +380,7 @@ async function callZen(cfg, model, payload, sessionId) {
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: zenHeaders(cfg, sessionId),
+      headers: buildZenHeaders(cfg, sessionId),
       body: JSON.stringify(payload),
       signal: ctl.signal,
     });
@@ -970,7 +970,7 @@ export function createServer(overrides = {}) {
    * `clientStream` is what the caller asked for; Zen is always called with
    * stream:true because the free tier rejects anything else.
    */
-  async function runUpstream({ req, res, model, body, format, user, clientStream, injectedTools }) {
+  async function runUpstream({ res, model, body, format, user, clientStream, injectedTools }) {
     const sessionId = sessionFor(user);
     const upstream = await callZen(cfg, model, body, sessionId);
 
@@ -1173,7 +1173,7 @@ export function createServer(overrides = {}) {
         let attempt = 0;
         for (;;) {
           try {
-            await runUpstream({ req, res, model, body: payload, format, user, clientStream, injectedTools });
+            await runUpstream({ res, model, body: payload, format, user, clientStream, injectedTools });
             break;
           } catch (err) {
             const canFallback =

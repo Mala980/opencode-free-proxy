@@ -354,9 +354,28 @@ OC_VERSION=2.0.22 OC_RUNTIME=bun/1.4.2 node server.mjs
 ## Development
 
 ```bash
-npm test              # 32 end-to-end tests against a mock Zen upstream
+npm test              # 40 tests, no network, ~3s
+npm run lint          # oxlint (the same linter anomalyco/opencode uses)
 npm run dev           # node --watch server.mjs
+npm run capture:fixture -- --bin $(command -v opencode)   # re-record the CLI's request
 ```
+
+Two kinds of tests:
+
+- `test/proxy.test.mjs` — end-to-end against a **mock Zen**: all three API
+  formats, streaming, error mapping, fallback, and the runtime verification
+  (which models get hidden and why).
+- `test/fingerprint.test.mjs` — a **contract test** against the official
+  client. `test/fixtures/opencode-cli-1.18.34.json` holds a request recorded
+  from the real opencode CLI (captured by pointing it at a local server), and
+  the test asserts our User-Agent, `x-opencode-*` headers, id shapes and
+  injected tool names still match it. If Zen's gates change, this fails here
+  instead of in production.
+
+CI (`.github/workflows/`) mirrors upstream's setup: `test.yml` runs the suite
+on Node 18/20/22 plus lint on every push and PR, and `models-snapshot.yml`
+re-checks the catalog against Zen daily and opens an issue when it drifts.
+See `AGENTS.md` for the branch/commit conventions used in this repo.
 
 ## Free-tier limits
 
