@@ -257,6 +257,7 @@ WantedBy=multi-user.target
 | `VERIFY_INTERVAL_MS` | `1800000` | Re-probe cadence (30 min) |
 | `VERIFY_TIMEOUT_MS` | `20000` | Per-model probe timeout |
 | `VERIFY_CONCURRENCY` | `4` | Parallel probes |
+| `VERIFY_STARTUP_TIMEOUT_MS` | `60000` | How long startup waits for the first probe round — verification never blocks the port |
 
 ## Keeping the data fresh
 
@@ -289,6 +290,22 @@ means your client happily offers a model that fails on every call.
 So at startup — and every `VERIFY_INTERVAL_MS` (default 30 min) — the proxy
 sends one tiny request per model (`stream:true`, `max_tokens:16`, about 15
 tokens each) and classifies the answer:
+
+The port is bound **first**, so a slow Zen can never leave you staring at a
+frozen console: verification runs in the background, logs one line per model
+as it goes, and gives up *waiting* after `VERIFY_STARTUP_TIMEOUT_MS` (60s) —
+the probes still in flight keep running and land in the next report. Until
+the first round finishes the catalog is served unverified, which is exactly
+what `VERIFY_MODELS=0` would give you anyway.
+
+```
+[MODELS] Refreshed from Zen: 86 ids upstream, 13 free models exposed
+[VERIFY] probing 13 free models (4 at a time, 20000ms each), 60000ms startup budget
+[VERIFY] ok            big-pickle (812ms)
+[VERIFY] rate_limited  mimo-v2.5-free (640ms)
+[VERIFY] hidden        muse-spark-1.3-contributor-free: Region not supported
+[VERIFY] done in 12027ms — 11 ok, 1 rate_limited, 1 region_blocked
+```
 
 | Probe result | Shown in `/v1/models`? |
 |--------------|------------------------|
@@ -354,7 +371,7 @@ OC_VERSION=2.0.22 OC_RUNTIME=bun/1.4.2 node server.mjs
 ## Development
 
 ```bash
-npm test              # 40 tests, no network, ~3s
+npm test              # 41 tests, no network, ~3s
 npm run lint          # oxlint (the same linter anomalyco/opencode uses)
 npm run dev           # node --watch server.mjs
 npm run capture:fixture -- --bin $(command -v opencode)   # re-record the CLI's request
@@ -393,6 +410,8 @@ transparently retry on the next free model instead.
 | `REGION BLOCKED` on `muse-spark-*-free` / `fledge-alpha-free` | Geoblocked at the Zen layer, nothing the proxy can do — pick another model |
 | `NOT USABLE` / `NOT ON ZEN` | The model rotated out or is geoblocked. It is auto-hidden from `/v1/models`; `npm run update:models` refreshes the catalog |
 | `/v1/models` is empty or missing a model | Check `GET /health` → `verification.hidden`; set `VERIFY_MODELS=0` to see the raw catalog |
+| The log stops after `[MODELS] Refreshed from Zen: …` | Not stuck — the probe round is running in the background (up to `VERIFY_STARTUP_TIMEOUT_MS`). The port is already open; watch `GET /health` → `verification.running`, or skip it with `VERIFY_MODELS=0` |
+| Startup waits a minute before printing `models` | Zen is slow to answer probes. Lower `VERIFY_TIMEOUT_MS` / `VERIFY_STARTUP_TIMEOUT_MS`, or raise `VERIFY_CONCURRENCY` |
 | `UNREACHABLE` | Network/DNS. Check you can `curl https://opencode.ai/zen/v1/models` |
 
 ## Notes

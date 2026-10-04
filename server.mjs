@@ -86,6 +86,10 @@ export function loadConfig(overrides = {}) {
     verifyIntervalMs: num(process.env.VERIFY_INTERVAL_MS, 30 * 60 * 1000),
     verifyTimeoutMs: num(process.env.VERIFY_TIMEOUT_MS, 20000),
     verifyConcurrency: num(process.env.VERIFY_CONCURRENCY, 4),
+    // Verification never blocks startup: the port is bound first, and the
+    // first round gives up waiting after this budget (the probes that are
+    // still in flight keep running and land in the next health report).
+    verifyStartupTimeoutMs: num(process.env.VERIFY_STARTUP_TIMEOUT_MS, 60000),
   };
   return { ...cfg, ...overrides };
 }
@@ -835,6 +839,9 @@ export function createServer(overrides = {}) {
     checked: new Map(),
     lastVerifyAt: 0,
     verifyTimer: null,
+    verifying: false,
+    ready: false,
+    startup: null,
   };
 
   const candidates = () => activeModels(catalog, state);
@@ -876,36 +883,71 @@ export function createServer(overrides = {}) {
     }
   }
 
-  async function verify() {
+  /**
+   * Probes every candidate once. `budgetMs` > 0 makes the caller stop waiting
+   * after that long; the probes already in flight keep running.
+   */
+  function verify({ budgetMs = 0 } = {}) {
     const queue = candidates().filter((m) => (m.endpoint || "chat") !== "systemone");
-    const worker = async () => {
-      for (let model = queue.shift(); model; model = queue.shift()) {
-        const result = await probeModel({
-          zenBase: cfg.zenBase,
-          userAgent: cfg.userAgent,
-          zenKey: cfg.zenKey,
-          client: cfg.client,
-          project: cfg.project,
-          model,
-          timeoutMs: cfg.verifyTimeoutMs,
-        });
-        state.checked.set(model.id, result);
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.max(1, Math.min(cfg.verifyConcurrency, queue.length || 1)) }, worker),
-    );
-    state.lastVerifyAt = Date.now();
+    const total = queue.length;
+    const startedAt = Date.now();
+    if (!total) return Promise.resolve();
 
-    const tally = {};
-    for (const result of state.checked.values()) tally[result.status] = (tally[result.status] || 0) + 1;
-    const summary = Object.entries(tally)
-      .map(([status, count]) => `${count} ${status}`)
-      .join(", ");
-    console.log(`[VERIFY] ${summary || "nothing checked"}`);
-    for (const [id, result] of state.checked) {
-      if (HIDDEN_STATUSES.has(result.status)) console.log(`[VERIFY] hidden ${id}: ${result.detail}`);
-    }
+    const headline = `[VERIFY] probing ${total} free model${total === 1 ? "" : "s"} (${Math.min(cfg.verifyConcurrency, total)} at a time, ${cfg.verifyTimeoutMs}ms each)`;
+    console.log(budgetMs ? `${headline}, ${budgetMs}ms startup budget` : headline);
+
+    const run = (async () => {
+      state.verifying = true;
+      try {
+        const worker = async () => {
+          for (let model = queue.shift(); model; model = queue.shift()) {
+            const result = await probeModel({
+              zenBase: cfg.zenBase,
+              userAgent: cfg.userAgent,
+              zenKey: cfg.zenKey,
+              client: cfg.client,
+              project: cfg.project,
+              model,
+              timeoutMs: cfg.verifyTimeoutMs,
+            });
+            state.checked.set(model.id, result);
+            if (cfg.logRequests) {
+              console.log(`[VERIFY] ${result.status.padEnd(13)} ${model.id} (${result.ms}ms)`);
+            }
+          }
+        };
+        await Promise.all(
+          Array.from({ length: Math.max(1, Math.min(cfg.verifyConcurrency, total)) }, worker),
+        );
+        state.lastVerifyAt = Date.now();
+
+        const tally = {};
+        for (const result of state.checked.values()) tally[result.status] = (tally[result.status] || 0) + 1;
+        const summary = Object.entries(tally)
+          .map(([status, count]) => `${count} ${status}`)
+          .join(", ");
+        console.log(`[VERIFY] done in ${Date.now() - startedAt}ms — ${summary || "nothing checked"}`);
+        for (const [id, result] of state.checked) {
+          if (HIDDEN_STATUSES.has(result.status)) console.log(`[VERIFY] hidden ${id}: ${result.detail}`);
+        }
+      } finally {
+        state.verifying = false;
+      }
+    })();
+    run.catch(() => {});
+
+    if (!budgetMs) return run;
+
+    let budgetTimer;
+    const budget = new Promise((resolve) => {
+      budgetTimer = setTimeout(() => {
+        console.log(
+          `[VERIFY] startup budget of ${budgetMs}ms exhausted — serving the catalog, remaining probes land in the background`,
+        );
+        resolve();
+      }, budgetMs);
+    });
+    return Promise.race([run, budget]).finally(() => clearTimeout(budgetTimer));
   }
 
   function unknownModelError(id) {
@@ -1043,6 +1085,8 @@ export function createServer(overrides = {}) {
           },
           verification: {
             enabled: cfg.verify,
+            running: state.verifying,
+            ready: state.ready,
             lastRun: state.lastVerifyAt ? new Date(state.lastVerifyAt).toISOString() : null,
             hidden: [...state.checked].filter(([, r]) => HIDDEN_STATUSES.has(r.status)).map(([id]) => id),
             results: Object.fromEntries([...state.checked].map(([id, r]) => [id, r.status])),
@@ -1237,20 +1281,29 @@ export function createServer(overrides = {}) {
     close: async () => {
       if (state.timer) clearInterval(state.timer);
       if (state.verifyTimer) clearInterval(state.verifyTimer);
+      await state.startup?.catch(() => {});
       await new Promise((resolve) => server.close(resolve));
     },
+    /** Resolves when the first refresh + verification round has settled. */
+    ready: () => state.startup || Promise.resolve(),
     listen: async () => {
-      if (cfg.refreshModels) {
-        await refresh();
-        state.timer = setInterval(refresh, cfg.refreshMs);
-        state.timer.unref?.();
-      }
-      if (cfg.verify) {
-        await verify().catch((err) => console.log(`[VERIFY] failed: ${err.message}`));
-        state.verifyTimer = setInterval(() => verify().catch(() => {}), cfg.verifyIntervalMs);
-        state.verifyTimer.unref?.();
-      }
+      // Bind first: a slow or unreachable Zen must never keep the port closed.
       await new Promise((resolve) => server.listen(cfg.port, cfg.host, resolve));
+      state.startup = (async () => {
+        if (cfg.refreshModels) {
+          await refresh();
+          state.timer = setInterval(refresh, cfg.refreshMs);
+          state.timer.unref?.();
+        }
+        if (cfg.verify) {
+          await verify({ budgetMs: cfg.verifyStartupTimeoutMs }).catch((err) =>
+            console.log(`[VERIFY] failed: ${err.message}`),
+          );
+          state.verifyTimer = setInterval(() => verify().catch(() => {}), cfg.verifyIntervalMs);
+          state.verifyTimer.unref?.();
+        }
+        state.ready = true;
+      })();
       return server.address();
     },
   };
@@ -1260,22 +1313,30 @@ export async function startServer(overrides = {}) {
   const app = createServer(overrides);
   const addr = await app.listen();
   const port = typeof addr === "object" && addr ? addr.port : app.cfg.port;
-  const list = app.models();
 
+  // The port is already accepting connections — everything below is optional
+  // background work, so a slow Zen can never make the server look frozen.
   console.log(`opencode-free-proxy v${PROXY_VERSION}  (impersonating opencode ${app.cfg.ocVersion})`);
   console.log(`  listening   http://${app.cfg.host}:${port}`);
   console.log(`  upstream    ${app.cfg.zenBase}`);
   console.log("  endpoints   POST /v1/chat/completions · POST /v1/messages · POST /v1/responses · GET /v1/models · GET /health");
-  console.log(`  models      ${list.length} free: ${list.map((m) => m.id).join(", ")}`);
   for (const [name, key] of Object.entries(app.keys)) {
     console.log(`  ${name.padEnd(15)} ${key}`);
   }
+
+  await app.ready();
+
+  const list = app.models();
+  console.log(`  models      ${list.length} free: ${list.map((m) => m.id).join(", ")}`);
   if (!app.state.liveIds) {
     console.log("  note        Zen model list not reachable — serving the bundled catalog");
   }
   const hidden = [...app.state.checked].filter(([, r]) => HIDDEN_STATUSES.has(r.status));
   if (hidden.length) {
     console.log(`  hidden      ${hidden.map(([id, r]) => `${id} (${r.detail})`).join(" · ")}`);
+  }
+  if (app.state.verifying) {
+    console.log("  note        verification still running in the background — /health has the live results");
   }
   return app;
 }

@@ -29,7 +29,7 @@ Mirrors upstream's style guide where it applies to plain JS:
 ## Tests
 
 ```bash
-npm test                 # node --test, 40 tests, no network
+npm test                 # node --test, 41 tests, no network
 npm run lint             # oxlint
 npm run doctor           # live check against Zen (needs network)
 ```

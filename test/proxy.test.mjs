@@ -230,6 +230,7 @@ before(async () => {
     verify: false,
   });
   const addr = await app.listen();
+  await app.ready(); // first refresh + verification round
   base = `http://127.0.0.1:${addr.port}`;
 });
 
@@ -310,6 +311,7 @@ async function withProxy(overrides, fn) {
     ...overrides,
   });
   const addr = await instance.listen();
+  await instance.ready();
   try {
     return await fn(`http://127.0.0.1:${addr.port}`, instance);
   } finally {
@@ -573,6 +575,7 @@ describe("runtime verification", () => {
       verifyTimeoutMs: 300,
     });
     const addr = await instance.listen();
+    await instance.ready();
     try {
       const res = await fetch(`${`http://127.0.0.1:${addr.port}`}/v1/models`, {
         headers: { Authorization: `Bearer ${KEYS.tester}` },
@@ -583,6 +586,19 @@ describe("runtime verification", () => {
     } finally {
       await instance.close();
     }
+  });
+
+  test("a slow Zen does not delay startup", async () => {
+    // 23 candidates, one of which never answers: the round outlives the
+    // startup budget, so the port has to open on its own.
+    const startedAt = Date.now();
+    await withProxy({ verify: true, verifyTimeoutMs: 1200, verifyStartupTimeoutMs: 150 }, async (baseUrl) => {
+      const elapsed = Date.now() - startedAt;
+      assert.ok(elapsed < 1000, `startup took ${elapsed}ms — the port must open before the probes finish`);
+      const health = await (await fetch(`${baseUrl}/health`)).json();
+      assert.equal(health.verification.running, true, "verification is still in flight");
+      assert.equal(health.verification.enabled, true);
+    });
   });
 });
 
