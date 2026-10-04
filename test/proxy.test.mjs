@@ -51,19 +51,27 @@ function startMockUpstream() {
             "midstream-free",
             "timeout-free",
             "thinking-free",
+            "injectcall-free",
             "gpt-6-astra",
           ].map((id) => ({ id, object: "model", owned_by: "opencode" })),
         });
       }
 
       if (url.pathname === "/v1/responses") {
-        return json(res, 200, {
+        const response = {
           id: "resp_1",
           object: "response",
           model,
           status: "completed",
           output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "responses ok" }] }],
-        });
+        };
+        if (body.stream) {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { ...response, status: "in_progress", output: [] } })}\n\n`);
+          res.write(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`);
+          return res.end();
+        }
+        return json(res, 200, response);
       }
 
       if (url.pathname === "/v1/chat/completions") {
@@ -116,6 +124,23 @@ function startMockUpstream() {
           } else {
             res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }));
           }
+          if (model === "injectcall-free") {
+            res.write(
+              sse({
+                choices: [
+                  {
+                    index: 0,
+                    delta: { tool_calls: [{ index: 0, id: "call_9", type: "function", function: { name: "read", arguments: '{"file' } }] },
+                  },
+                ],
+              }),
+            );
+            res.write(sse({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'Path":"/tmp/a"}' } }] } }] }));
+            res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }));
+          }
+          res.write(
+            sse({ id: "chatcmpl-1", model, choices: [], usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 } }),
+          );
           res.write("data: [DONE]\n\n");
           return res.end();
         }
@@ -538,6 +563,80 @@ describe("error handling", () => {
       });
       assert.equal(res.status, 429);
     });
+  });
+
+  test("Zen requests are always streamed, even for non-streaming callers", async () => {
+    await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
+    });
+    const last = upstream.requests[upstream.requests.length - 1];
+    assert.equal(last.body.stream, true, "the free tier 403s on stream:false");
+    const res2 = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }], stream: true },
+    });
+    assert.equal(res2.status, 200);
+    assert.match(res2.text, /data: \[DONE\]/);
+  });
+
+  test("the OpenCode builtin tool names are injected", async () => {
+    await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
+    });
+    const names = (upstream.requests[upstream.requests.length - 1].body.tools || []).map((t) => t.function?.name);
+    for (const required of ["bash", "edit", "glob", "grep", "read"]) {
+      assert.ok(names.includes(required), `missing injected tool ${required}`);
+    }
+  });
+
+  test("caller tools survive and are not duplicated", async () => {
+    await call("/v1/chat/completions", {
+      method: "POST",
+      body: {
+        model: "big-pickle",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [{ type: "function", function: { name: "get_weather", parameters: { type: "object" } } }],
+      },
+    });
+    const tools = upstream.requests[upstream.requests.length - 1].body.tools;
+    const names = tools.map((t) => t.function?.name);
+    assert.ok(names.includes("get_weather"));
+    assert.equal(new Set(names).size, names.length, "no duplicate tool names");
+  });
+
+  test("x-opencode-session matches the canonical Zen shape", async () => {
+    await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
+    });
+    const last = upstream.requests[upstream.requests.length - 1];
+    assert.match(last.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.match(last.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.equal(last.headers["x-opencode-session"], last.headers["x-opencode-session-id"]);
+  });
+
+  test("responses format gets the flat tool shape and is re-assembled", async () => {
+    const res = await call("/v1/responses", {
+      method: "POST",
+      body: { model: "muse-spark-1.3-contributor-free", input: "hi" },
+    });
+    assert.equal(res.status, 200);
+    const names = (upstream.requests[upstream.requests.length - 1].body.tools || []).map((t) => t.name);
+    for (const required of ["bash", "edit", "glob", "grep", "read"]) assert.ok(names.includes(required));
+    assert.equal(res.json().output[0].content[0].text, "responses ok");
+  });
+
+  test("calls to injected tools are hidden from clients that declared none", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "injectcall-free", messages: [{ role: "user", content: "hi" }] },
+    });
+    assert.equal(res.status, 200);
+    const data = res.json();
+    assert.equal(data.choices[0].message.tool_calls, undefined);
+    assert.equal(data.choices[0].finish_reason, "stop");
   });
 
   test("upstream timeout → 504", async () => {

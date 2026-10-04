@@ -54,6 +54,36 @@ Zen. Requests for them return a 404 that tells you what to use instead, e.g.
 { "error": { "message": "minimax-m2.5-free is no longer available. Removed from Zen (MiniMax M2.5 deprecated 2026-08-05). Use mimo-v2.6-flash-free or big-pickle.", "code": "model_retired" } }
 ```
 
+## Free-tier gates (read this if you get a 403)
+
+Since 2026-09-16 OpenCode Zen only answers free-tier requests that look like
+they come from the OpenCode CLI. Anything else gets:
+
+```json
+{"type":"error","error":{"type":"FreeTierError","message":"Error from provider (Console): OpenCode's free tier can only be used from within OpenCode"}}
+```
+
+The gates (reverse engineered live by the community —
+[9router#4101](https://github.com/decolua/9router/issues/4101),
+[9router#4132](https://github.com/decolua/9router/pulls/4132),
+[pi-free#544](https://github.com/apmantza/pi-free/issues/544)):
+
+| # | Zen requires | This proxy sends |
+|---|--------------|-----------------|
+| 1 | `User-Agent` leading `opencode/<version>`, version ≥ 1.17.0 | `opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14` (verified byte-for-byte against the real 1.18.34 CLI) |
+| 2 | `x-opencode-session` matching `^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$` | canonical ids from `lib/zen.mjs` (same scheme as OpenCode's ULID) |
+| 3 | `stream: true` | always streamed upstream; non-streaming client requests are re-assembled into one response |
+| 4 | `tools[]` containing the builtin names | `bash`, `edit`, `glob`, `grep`, `read` injected when the caller didn't declare them |
+
+Consequences worth knowing:
+
+- Tool calls for the **injected** names are dropped from non-streaming
+  responses (`ZEN_STRIP_INJECTED_TOOLS=0` keeps them) — your client has no way
+  to run them anyway.
+- If Zen retunes the gate again, the fix is usually one line: set
+  `ZEN_TOOL_SET=bash,edit,glob,grep,read,write` (or whatever the new set is)
+  or bump `OC_VERSION`. Run `npm run doctor` to confirm.
+
 ## API
 
 ### OpenAI — `POST /v1/chat/completions`
@@ -212,6 +242,10 @@ WantedBy=multi-user.target
 | `LOG_REQUESTS` | `1` | `0` = quiet |
 | `FALLBACK` | `0` | `1` = retry the request on the next free model when one is rate limited |
 | `FALLBACK_MAX` | `2` | How many other models to try before giving up |
+| `ZEN_FORCE_STREAM` | `1` | Always call Zen with `stream:true` (gate #3). `0` = pass the caller's preference through |
+| `ZEN_TOOLS` | `1` | Inject the builtin tool names (gate #4). `0` = send the caller's tools only |
+| `ZEN_TOOL_SET` | `bash,edit,glob,grep,read` | Which tool names to inject |
+| `ZEN_STRIP_INJECTED_TOOLS` | `1` | Hide tool calls for injected tools from callers that declared none |
 
 ## Keeping the data fresh
 
@@ -274,7 +308,7 @@ OC_VERSION=2.0.22 OC_RUNTIME=bun/1.4.2 node server.mjs
 ## Development
 
 ```bash
-npm test              # 22 end-to-end tests against a mock Zen upstream
+npm test              # 28 end-to-end tests against a mock Zen upstream
 npm run dev           # node --watch server.mjs
 ```
 
@@ -284,6 +318,16 @@ Zen answers `FreeUsageLimitError` once a free model's quota is used up. The prox
 turns that into a proper `429` (and, when it shows up mid-stream, into an SSE
 error frame instead of a truncated response). Set `FALLBACK=1` to have the proxy
 transparently retry on the next free model instead.
+
+## Troubleshooting
+
+| Symptom | What to do |
+|---------|-----------|
+| `FreeTierError: ... can only be used from within OpenCode` | `npm run doctor`. If it says `FREE-TIER GATE`, Zen retuned a gate — check the table above and try `ZEN_TOOL_SET` / `OC_VERSION` |
+| `RATE LIMITED` on every model | The anonymous quota is per egress IP and shared; wait, or set `ZEN_API_KEY` to a real Zen key |
+| `REGION BLOCKED` on `muse-spark-*-free` / `fledge-alpha-free` | Geoblocked at the Zen layer, nothing the proxy can do — pick another model |
+| `NOT ON ZEN` | The model rotated out. `npm run update:models` |
+| `UNREACHABLE` | Network/DNS. Check you can `curl https://opencode.ai/zen/v1/models` |
 
 ## Notes
 

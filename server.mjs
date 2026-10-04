@@ -15,10 +15,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { once } from "node:events";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  aggregateToCompletion,
+  applyChunk,
+  generateSessionId,
+  newAggregate,
+  withFingerprintTools,
+  withFingerprintToolsFlat,
+  zenHeaders as zenFingerprintHeaders,
+} from "./lib/zen.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-export const PROXY_VERSION = "1.0.0";
+export const PROXY_VERSION = "1.1.0";
 
 // Latest stable opencode 1.x (the line that still ships the Zen free tier
 // flow this proxy mimics). opencode 2.0.22 exists and uses the same
@@ -64,6 +73,12 @@ export function loadConfig(overrides = {}) {
     // request on the next free model instead of returning 429.
     fallback: process.env.FALLBACK === "1",
     fallbackMax: num(process.env.FALLBACK_MAX, 2),
+    // Zen's free tier only answers requests that look like the OpenCode CLI:
+    // streamed, carrying the bash/glob/grep/read tool quartet. Both are on by
+    // default; turn them off only when you use a real (paid) Zen key.
+    forceStream: process.env.ZEN_FORCE_STREAM !== "0",
+    injectTools: process.env.ZEN_TOOLS !== "0",
+    stripInjectedTools: process.env.ZEN_STRIP_INJECTED_TOOLS !== "0",
   };
   return { ...cfg, ...overrides };
 }
@@ -303,18 +318,10 @@ function mapUpstreamError(status, data, raw) {
 
 // ── Zen request ────────────────────────────────────────────────────
 function zenHeaders(cfg, sessionId) {
-  return {
-    "Content-Type": "application/json",
-    Accept: "application/json, text/event-stream",
-    "Accept-Encoding": "identity",
-    Authorization: `Bearer ${cfg.zenKey}`,
-    "User-Agent": cfg.userAgent,
-    "x-opencode-client": cfg.client,
-    "x-opencode-project": cfg.project,
-    "x-opencode-session": sessionId,
-    "x-opencode-session-id": sessionId,
-    "x-opencode-request": ocId("msg"),
-  };
+  return zenFingerprintHeaders(
+    { userAgent: cfg.userAgent, zenKey: cfg.zenKey, client: cfg.client, project: cfg.project },
+    sessionId,
+  );
 }
 
 function endpointPath(endpoint) {
@@ -822,7 +829,7 @@ export function createServer(overrides = {}) {
     const now = Date.now();
     const current = sessions.get(user);
     if (current && now - current.ts < cfg.sessionTtlMs) return current.id;
-    const session = { id: ocId("ses"), ts: now };
+    const session = { id: generateSessionId(), ts: now };
     sessions.set(user, session);
     return session.id;
   }
@@ -858,43 +865,92 @@ export function createServer(overrides = {}) {
     console.log(`[${tag}]`, new Date().toISOString(), user, model.id, extra);
   }
 
-  async function runUpstream({ req, res, model, body, format, user }) {
+  // Drain a Zen SSE stream, watching for error frames.
+  async function collectSseLines(upstream) {
+    const raw = await upstream.text();
+    const lines = [];
+    if (!raw.includes("data:")) {
+      const data = parseJsonSafe(raw);
+      if (data?.error || data?.type === "error") throw mapUpstreamError(upstream.status, data, raw);
+    }
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      const parsed = parseJsonSafe(payload);
+      if (!parsed) continue;
+      if (parsed.error || parsed.type === "error") throw mapUpstreamError(502, parsed, payload);
+      lines.push(parsed);
+    }
+    return lines;
+  }
+
+  async function collectChatCompletion(upstream, model) {
+    const agg = newAggregate(model.id);
+    for (const parsed of await collectSseLines(upstream)) applyChunk(agg, parsed);
+    return agg;
+  }
+
+  async function collectResponsesPayload(upstream) {
+    let completed = null;
+    let last = null;
+    for (const parsed of await collectSseLines(upstream)) {
+      if (parsed.type === "response.completed" && parsed.response) completed = parsed.response;
+      last = parsed;
+    }
+    if (completed) return completed;
+    if (last?.response) return last.response;
+    if (last) return last;
+    throw new UpstreamError(502, "upstream_error", "Zen returned an empty response");
+  }
+
+  /**
+   * `clientStream` is what the caller asked for; Zen is always called with
+   * stream:true because the free tier rejects anything else.
+   */
+  async function runUpstream({ req, res, model, body, format, user, clientStream, injectedTools }) {
     const sessionId = sessionFor(user);
     const upstream = await callZen(cfg, model, body, sessionId);
-    const wantsStream = Boolean(body.stream);
 
     if (!upstream.ok) {
       const raw = await upstream.text().catch(() => "");
       const data = parseJsonSafe(raw);
-      const err = mapUpstreamError(upstream.status, data, raw);
-      throw err;
+      throw mapUpstreamError(upstream.status, data, raw);
     }
 
-    if (!wantsStream) {
-      const raw = await upstream.text();
-      const data = parseJsonSafe(raw);
-      if (!data) throw new UpstreamError(502, "upstream_error", "Zen returned a non-JSON response");
-      if (data.error || data.type === "error") throw mapUpstreamError(upstream.status, data, raw);
-
+    if (clientStream) {
+      if (!upstream.body) throw new UpstreamError(502, "upstream_error", "Zen returned an empty stream");
       if (format === "anthropic") {
         const inputTokens = estimateTokens(JSON.stringify(body.messages || []));
-        sendJson(res, 200, openAIToAnthropic(data, model, inputTokens));
+        await pipeAsAnthropicSse(upstream, res, model, inputTokens);
         return;
       }
-      sendJson(res, 200, data);
+      sseHeaders(res);
+      await pipeRawSse(upstream, res, format);
       return;
     }
 
-    if (!upstream.body) throw new UpstreamError(502, "upstream_error", "Zen returned an empty stream");
+    // Non-streaming caller: re-assemble the upstream stream into one payload.
+    if (!upstream.body) throw new UpstreamError(502, "upstream_error", "Zen returned an empty response");
+
+    if (format === "responses") {
+      sendJson(res, 200, await collectResponsesPayload(upstream));
+      return;
+    }
+
+    const agg = await collectChatCompletion(upstream, model);
+    const completion = aggregateToCompletion(agg, {
+      dropToolNames: cfg.stripInjectedTools ? injectedTools : [],
+    });
 
     if (format === "anthropic") {
       const inputTokens = estimateTokens(JSON.stringify(body.messages || []));
-      await pipeAsAnthropicSse(upstream, res, model, inputTokens);
+      sendJson(res, 200, openAIToAnthropic(completion, model, inputTokens));
       return;
     }
 
-    sseHeaders(res);
-    await pipeRawSse(upstream, res, format);
+    sendJson(res, 200, completion);
   }
 
   const server = http.createServer(async (req, res) => {
@@ -1016,9 +1072,17 @@ export function createServer(overrides = {}) {
           payload.model = model.id;
         } else if (format === "responses") {
           payload = { ...body, model: model.id, stream: Boolean(body.stream) };
+          if (payload.store === undefined) payload.store = false;
         } else {
           payload = buildChatPayload(body, model);
         }
+
+        const clientStream = Boolean(payload.stream);
+        let injectedTools = [];
+        if (cfg.injectTools) {
+          injectedTools = format === "responses" ? withFingerprintToolsFlat(payload) : withFingerprintTools(payload);
+        }
+        if (cfg.forceStream) payload.stream = true;
 
         logRequest(
           format === "anthropic" ? "ANT" : format === "responses" ? "RSP" : "OAI",
@@ -1031,7 +1095,7 @@ export function createServer(overrides = {}) {
         let attempt = 0;
         for (;;) {
           try {
-            await runUpstream({ req, res, model, body: payload, format, user });
+            await runUpstream({ req, res, model, body: payload, format, user, clientStream, injectedTools });
             break;
           } catch (err) {
             const canFallback =

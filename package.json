@@ -1,6 +1,6 @@
 {
   "name": "opencode-free-proxy",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Free OpenCode Zen models exposed as OpenAI, Responses and Anthropic APIs",
   "type": "module",
   "main": "server.mjs",
