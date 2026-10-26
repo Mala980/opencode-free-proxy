@@ -4,7 +4,7 @@ Free models from [OpenCode Zen](https://opencode.ai/docs/zen/) served as standar
 **OpenAI**, **Responses** and **Anthropic** APIs — so Cursor, Continue, Cline,
 Claude Code, aider, the opencode CLI or plain `curl` can all use them.
 
-Catalog last synced: **2026-10-04** · opencode **1.18.34** (2.0.22 is current, both
+Catalog last synced: **2026-10-26** · opencode **1.19.4** (the dev branch is 2.1.4, both
 work — see [Version](#impersonated-client-version)).
 
 ## 30-second setup
@@ -26,18 +26,24 @@ npm run doctor          # verify the free models actually answer from your machi
 
 | Model | Endpoint | Context | Tools | Notes |
 |-------|----------|--------:|:-----:|-------|
-| `big-pickle` | chat | 200K | ✓ | Stealth reasoning model, free for a limited time |
-| `space-bunny-free` | chat | 1M | ✓ | Multimodal, zero-retention provider |
-| `longcat-2.5-preview-free` | chat | 1M | ✓ | Multimodal, zero-retention provider |
-| `fledge-alpha-free` | chat | 1M | ✓ | Newest free model (2026-10-01) |
+| `big-pickle` | chat | 200K | ✓ | Stealth model, free for a limited time |
+| `space-bunny-free` | chat | 1.0M | ✓ | Deprecated upstream, still served |
+| `longcat-2.5-preview-free` | chat | 1M | ✓ | Deprecated upstream, still served |
+| `mimo-v2.6-flash-free` | chat | 200K | ✓ | Multimodal |
+| `fledge-alpha-free` | chat | 1.0M | ✓ | Deprecated upstream, still served |
 | `nemotron-3-ultra-free` | chat | 1M | ✓ | NVIDIA trial endpoint |
 | `nemotron-3.5-lightning-free` | chat | 262K | ✓ | NVIDIA trial endpoint |
-| `ling-3.1-flash-free` | chat | 262K | ✓ | Reasoning toggle |
-| `ling-3.0-flash-fin-free` | chat | 262K | ✓ | Finance-tuned |
-| `mimo-v2.6-flash-free` | chat | 200K | ✓ | Multimodal |
+| `ling-3.1-flash-free` | chat | 262K | ✓ | Deprecated upstream, still served |
+| `ling-3.0-flash-fin-free` | chat | 262K | ✓ | Deprecated upstream, still served |
 | `deepseek-v4-flash-free` | chat | 200K | ✓ | Deprecated upstream, still served |
 | `mimo-v2.5-free` | chat | 200K | ✓ | Deprecated upstream, still served |
-| `muse-spark-1.3-contributor-free` | **responses** | 1M | ✓ | Use `POST /v1/responses` |
+| `muse-spark-1.3-contributor-free` | responses | 1.0M | ✓ | Deprecated upstream, still served |
+| `muse-spark-1.2-contributor-free` | responses | 1.0M | ✓ | Deprecated upstream, still served |
+| `beam-free` | chat | — | ✓ | New free model on models.dev — unverified on Zen |
+| `deepseek-v4.1-flash-free` | chat | 200K | ✓ | New free model on models.dev — unverified on Zen |
+| `flint-40b-free` | chat | — | — | New free model on models.dev — unverified on Zen |
+| `glm-5.3-flash-free` | chat | 200K | ✓ | New free model on models.dev — unverified on Zen |
+| `nemotron-3.5-super-vl-free` | chat | — | — | New free model on models.dev — unverified on Zen |
 
 All of them stream, take system messages and (mostly) support tool calls.
 
@@ -48,9 +54,15 @@ ids that answer `RegionError`, paid-only ids). `GET /health` shows what was
 hidden and why, so `GET /v1/models` only ever lists models that really
 answered a real request.
 
-Two free ids are deliberately **not** proxied: `jev-1.13-free` (a typed-question
-API on `/zen/v1/systemone`, not chat) and anything that isn't free — the proxy
-only ever exposes models that cost $0 on Zen.
+Two kinds of ids are deliberately **not** proxied: `jev-1.13-free` (a
+typed-question API on `/zen/v1/systemone`, not chat — it is switched off in the
+catalog even though models.dev prices it at zero) and anything that is not
+free — the proxy only ever exposes models that cost $0 on models.dev.
+
+models.dev marks most of the free catalogue `deprecated` (37 of 47 right now):
+upstream is saying "legacy, superseded", not "gone", so they stay listed and the
+live probe decides. The five `beam-free`/`flint-40b-free`/… rows are new since
+the last sync and still `unverified` — `npm run doctor` settles them.
 
 ### Removed since older versions of this proxy
 
@@ -77,7 +89,7 @@ The gates (reverse engineered live by the community —
 
 | # | Zen requires | This proxy sends |
 |---|--------------|-----------------|
-| 1 | `User-Agent` leading `opencode/<version>`, version ≥ 1.17.0 | `opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14` (verified byte-for-byte against the real 1.18.34 CLI) |
+| 1 | `User-Agent` leading `opencode/<version>`, version ≥ 1.17.0 | `opencode/1.19.4 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4` (verified byte-for-byte against the real 1.19.4 CLI) |
 | 2 | `x-opencode-session` matching `^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$` | canonical ids from `lib/zen.mjs` (same scheme as OpenCode's ULID) |
 | 3 | `stream: true` | always streamed upstream; non-streaming client requests are re-assembled into one response |
 | 4 | `tools[]` containing the builtin names | `bash`, `edit`, `glob`, `grep`, `read` injected when the caller didn't declare them |
@@ -240,8 +252,8 @@ WantedBy=multi-user.target
 | `ZEN_API_KEY` | `public` | Zen key — leave as `public` for the free tier, or drop in a real Zen key |
 | `ZEN_TIMEOUT_MS` | `120000` | Upstream timeout → `504` |
 | `MAX_BODY_BYTES` | `12582912` | Request body limit (12 MB) |
-| `OC_VERSION` | `1.18.34` | opencode version to impersonate |
-| `OC_USER_AGENT` | `opencode/<ver> ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14` | Full UA override |
+| `OC_VERSION` | `1.19.4` | opencode version to impersonate |
+| `OC_USER_AGENT` | `opencode/<ver> ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4` | Full UA override |
 | `OC_CLIENT` / `OC_PROJECT` | `cli` / `global` | `x-opencode-client` / `x-opencode-project` values |
 | `REFRESH_MODELS` | `1` | `0` = never call Zen's model list |
 | `REFRESH_SOURCE` | `zen` | Where the free list comes from: `zen` (live `/models`), `models-dev` (the catalogue opencode ships) or `both` |
@@ -382,7 +394,7 @@ Zen requires the client headers the opencode CLI sends. Without them, even
 
 ```
 Authorization: Bearer public
-User-Agent: opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14
+User-Agent: opencode/1.19.4 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4
 x-opencode-client: cli
 x-opencode-project: global
 x-opencode-session: ses_<id>
@@ -392,14 +404,22 @@ x-opencode-request: msg_<id>
 
 ### Impersonated client version
 
-`OC_VERSION` defaults to **1.18.34**, the newest stable opencode 1.x — the line
+`OC_VERSION` defaults to **1.19.4**, the newest stable opencode 1.x — the line
 that still ships the Zen free-tier flow this proxy mimics (`apiKey: "public"`
-when no Zen key is configured). opencode **2.0.22** exists and keeps the same
-free-tier path, it just moved to `x-opencode-session-id`. The proxy sends both
-families of headers, so switching is a one-liner:
+when no Zen key is configured). Upstream's `dev` branch is already **2.1.4** and
+keeps the same free-tier path; the proxy sends both header families, so
+switching is a one-liner:
 
 ```bash
-OC_VERSION=2.0.22 OC_RUNTIME=bun/1.4.2 node server.mjs
+OC_VERSION=2.1.4 OC_RUNTIME=bun/1.4.4 node server.mjs
+```
+
+The User-Agent we send is not a guess: `npm run capture:fixture` points the real
+CLI at a local server, records the request, and `test/fingerprint.test.mjs`
+fails if we ever drift from it. Re-capture after every opencode upgrade:
+
+```bash
+npm run capture:fixture -- --bin $(command -v opencode)
 ```
 
 ## Development
@@ -417,16 +437,19 @@ Two kinds of tests:
   formats, streaming, error mapping, fallback, and the runtime verification
   (which models get hidden and why).
 - `test/fingerprint.test.mjs` — a **contract test** against the official
-  client. `test/fixtures/opencode-cli-1.18.34.json` holds a request recorded
+  client. `test/fixtures/opencode-cli-<version>.json` holds a request recorded
   from the real opencode CLI (captured by pointing it at a local server), and
   the test asserts our User-Agent, `x-opencode-*` headers, id shapes and
   injected tool names still match it. If Zen's gates change, this fails here
   instead of in production.
+- `test/models-dev.test.mjs` — the models.dev reader against real provider
+  files copied from `anomalyco/models.dev`.
 
-CI (`.github/workflows/`) mirrors upstream's setup: `test.yml` runs the suite
-on Node 18/20/22 plus lint on every push and PR, and `models-snapshot.yml`
-re-checks the catalog against Zen daily and opens an issue when it drifts.
-See `AGENTS.md` for the branch/commit conventions used in this repo.
+CI (`.github/workflows/`) mirrors upstream's split: `check.yml` lints on every
+push and PR, `check-test.yml` runs the suite on Node 18/20/22, and
+`models-snapshot.yml` re-checks the catalog against models.dev + Zen daily and
+opens an issue when it drifts. See `AGENTS.md` for the branch/commit
+conventions used in this repo.
 
 ## Free-tier limits
 

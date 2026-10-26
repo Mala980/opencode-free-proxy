@@ -7,7 +7,7 @@
  * break the free tier fails the test suite instead of production.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, describe } from "node:test";
@@ -24,7 +24,9 @@ import {
 } from "../lib/zen.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const fixture = JSON.parse(readFileSync(path.join(HERE, "fixtures", "opencode-cli-1.18.34.json"), "utf8"));
+const captureNames = readdirSync(path.join(HERE, "fixtures")).filter((f) => f.startsWith("opencode-cli-") && f.endsWith(".json"));
+assert.equal(captureNames.length, 1, `expected exactly one CLI capture, found ${captureNames.join(", ")}`);
+const fixture = JSON.parse(readFileSync(path.join(HERE, "fixtures", captureNames[0]), "utf8"));
 const chat = fixture.requests.find((r) => r.endpoint === "chat/completions");
 const cliHeaders = chat.headers;
 
@@ -49,7 +51,7 @@ describe("parity with the official opencode CLI", () => {
     const mine = Object.fromEntries(
       Object.entries(
         zenHeaders(
-          { userAgent: "opencode/1.18.34", zenKey: "public", client: "cli", project: "global" },
+          { userAgent: loadConfig().userAgent, zenKey: "public", client: "cli", project: "global" },
           generateSessionId(),
         ),
       ).map(([name, value]) => [name.toLowerCase(), value]),

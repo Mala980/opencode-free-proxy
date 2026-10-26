@@ -29,10 +29,10 @@ const getArg = (name, fallback) => {
 };
 const hasFlag = (name) => args.includes(`--${name}`);
 
-const OC_VERSION = process.env.OC_VERSION || "1.18.34";
+const OC_VERSION = process.env.OC_VERSION || "1.19.4";
 const USER_AGENT =
   process.env.OC_USER_AGENT ||
-  `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/${process.env.OC_RUNTIME || "bun/1.3.14"}`;
+  `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/${process.env.OC_RUNTIME || "bun/1.4.4"}`;
 const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1").replace(/\/+$/, "");
 const SERVER = getArg("server", process.env.PROXY_URL || "");
 const TIMEOUT = Number(getArg("timeout", process.env.ZEN_TIMEOUT_MS || 45000));

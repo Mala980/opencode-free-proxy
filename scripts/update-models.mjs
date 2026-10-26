@@ -36,12 +36,12 @@ const CHECK = args.includes("--check");
 const NO_MODELS_DEV = args.includes("--no-models-dev");
 
 const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1").replace(/\/+$/, "");
-const OC_VERSION = process.env.OC_VERSION || "1.18.34";
+const OC_VERSION = process.env.OC_VERSION || "1.19.4";
 const MODELS_DEV_URL = process.env.MODELS_DEV_API_URL || "https://models.dev/api.json";
 const MODELS_DEV_PROVIDER = process.env.MODELS_DEV_PROVIDER || "opencode";
 const USER_AGENT =
   process.env.OC_USER_AGENT ||
-  `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/${process.env.OC_RUNTIME || "bun/1.3.14"}`;
+  `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/${process.env.OC_RUNTIME || "bun/1.4.4"}`;
 
 const FREE_SUFFIX = /-free$/;
 const EXTRA_FREE = new Set(["big-pickle", "grok-code"]);

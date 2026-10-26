@@ -1,11 +1,12 @@
-name: test
+name: check-test
 
-# Mirrors anomalyco/opencode's test workflow: run on every push and PR,
-# cancel stale runs, never write to the repo.
+# Mirrors anomalyco/opencode's check-test workflow: run on every push and
+# pull request (drafts excluded), cancel stale runs, never write to the repo.
 
 on:
   push:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -14,10 +15,15 @@ concurrency:
 
 permissions:
   contents: read
+  checks: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   unit:
     name: unit (node ${{ matrix.node }})
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -34,16 +40,3 @@ jobs:
 
       - name: Test
         run: npm test
-
-  lint:
-    name: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - run: npm install
-      - run: npm run lint

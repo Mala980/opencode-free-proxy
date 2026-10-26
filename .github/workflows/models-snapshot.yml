@@ -1,8 +1,9 @@
 name: models-snapshot
 
-# Upstream (anomalyco/opencode) refreshes its models snapshot on a daily cron.
-# Same idea here: check the bundled catalog against the live Zen list once a
-# day and raise an issue when a model appeared or disappeared.
+# Upstream keeps a models snapshot (`packages/core/script/update-models-snapshot.ts`);
+# it no longer ships a cron for it, but this repo does — check the bundled
+# catalog against models.dev + Zen once a day and raise an issue when a model
+# appeared, disappeared or stopped being free.
 
 on:
   schedule:

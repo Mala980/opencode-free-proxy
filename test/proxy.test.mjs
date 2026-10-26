@@ -405,7 +405,7 @@ describe("OpenAI format", () => {
     assert.equal(last.headers["x-opencode-project"], "global");
     assert.match(last.headers["x-opencode-session"], /^ses_/);
     assert.match(last.headers["x-opencode-request"], /^msg_/);
-    assert.match(last.headers["user-agent"], /^opencode\/1\.18\.34 /);
+    assert.equal(last.headers["user-agent"], app.cfg.userAgent);
   });
 });
 
@@ -785,7 +785,7 @@ describe("error handling", () => {
 
 describe("models.dev as the free-model source", () => {
   const API_FIXTURE = JSON.parse(
-    fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "models-dev-api.json"), "utf8"),
+    fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "models-dev-api-v2.json"), "utf8"),
   );
 
   function startModelsDevMock(json) {
@@ -916,7 +916,7 @@ describe("models.dev as the free-model source", () => {
       assert.equal(health.modelsDev.enabled, true);
       assert.equal(health.modelsDev.provider, "opencode");
       assert.equal(health.modelsDev.live, true);
-      assert.equal(health.modelsDev.free, 5);
+      assert.equal(health.modelsDev.free, 3, "beam-free, big-pickle and glm-4.7-free are priced at zero");
       assert.equal(health.modelsDev.error, null);
     });
   });

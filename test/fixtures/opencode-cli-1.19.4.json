@@ -1,10 +1,11 @@
 {
-  "$comment": "Captured from the real OpenCode CLI (opencode-linux-x64 1.18.34, bun 1.3.14) by pointing it at a local server. Contract test: what this proxy sends must stay equivalent to what the official client sends. Re-capture with scripts/capture-cli-fixture.mjs.",
-  "capturedAt": "2026-10-04",
+  "$comment": "Captured from the real OpenCode CLI by pointing it at a local server (scripts/capture-cli-fixture.mjs). Contract test: what this proxy sends must stay equivalent to what the official client sends.",
+  "capturedAt": "2026-10-26",
   "cli": {
     "package": "opencode-linux-x64",
-    "version": "1.18.34",
-    "runtime": "bun/1.3.14"
+    "version": "1.19.4",
+    "runtime": "bun/1.4.4",
+    "providerUtils": "4.0.23"
   },
   "requests": [
     {
@@ -12,12 +13,12 @@
       "headers": {
         "authorization": "Bearer public",
         "content-type": "application/json",
-        "user-agent": "opencode/1.18.34 ai-sdk/provider-utils/4.0.40 runtime/bun/1.3.14",
+        "user-agent": "opencode/1.19.4 ai-sdk/provider-utils/4.0.40 runtime/bun/1.4.4",
         "x-opencode-client": "cli",
-        "x-opencode-project": "global",
-        "x-opencode-request": "msg_106934411001H1or3rFZc6fGWF",
-        "x-opencode-session": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
-        "x-opencode-session-id": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
+        "x-opencode-project": "cc37624692548451e20b4ea59e3baa365e86eb53",
+        "x-opencode-request": "msg_176d5d603001NRbg8DgE3QX94a",
+        "x-opencode-session": "ses_e892a2a1affel8TwQ67arZQAAB",
+        "x-opencode-session-id": "ses_e892a2a1affel8TwQ67arZQAAB",
         "accept": "*/*"
       },
       "body": {
@@ -30,7 +31,8 @@
           "model",
           "reasoning",
           "store",
-          "stream"
+          "stream",
+          "temperature"
         ],
         "toolNames": []
       }
@@ -40,12 +42,12 @@
       "headers": {
         "authorization": "Bearer public",
         "content-type": "application/json",
-        "user-agent": "opencode/1.18.34 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14",
+        "user-agent": "opencode/1.19.4 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4",
         "x-opencode-client": "cli",
-        "x-opencode-project": "global",
-        "x-opencode-request": "msg_106934411001H1or3rFZc6fGWF",
-        "x-opencode-session": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
-        "x-opencode-session-id": "ses_ef96cbc59ffeO1ZZo5SBI61P2L",
+        "x-opencode-project": "cc37624692548451e20b4ea59e3baa365e86eb53",
+        "x-opencode-request": "msg_176d5d603001NRbg8DgE3QX94a",
+        "x-opencode-session": "ses_e892a2a1affel8TwQ67arZQAAB",
+        "x-opencode-session-id": "ses_e892a2a1affel8TwQ67arZQAAB",
         "accept": "*/*"
       },
       "body": {

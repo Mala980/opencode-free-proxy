@@ -1,8 +1,8 @@
 {
   "$comment": "Free-tier OpenCode Zen models exposed by this proxy. Regenerate with `npm run update:models`; verify with `npm run doctor`.",
-  "updated": "2026-10-04",
-  "opencodeVersion": "1.18.34",
-  "opencodeLatest": "2.0.22",
+  "updated": "2026-10-26",
+  "opencodeVersion": "1.19.4",
+  "opencodeLatest": "2.1.4",
   "zenBaseUrl": "https://opencode.ai/zen/v1",
   "sources": [
     "https://opencode.ai/zen/v1/models (live model list)",
@@ -54,7 +54,8 @@
         "output": [
           "text"
         ]
-      }
+      },
+      "status": "deprecated"
     },
     {
       "id": "longcat-2.5-preview-free",
@@ -67,7 +68,8 @@
       "attachment": true,
       "structured_output": false,
       "temperature": false,
-      "notes": "Zero-retention provider. Thinking is toggleable."
+      "notes": "Zero-retention provider. Thinking is toggleable.",
+      "status": "deprecated"
     },
     {
       "id": "mimo-v2.6-flash-free",
@@ -101,7 +103,8 @@
         "output": [
           "text"
         ]
-      }
+      },
+      "status": "deprecated"
     },
     {
       "id": "nemotron-3-ultra-free",
@@ -148,7 +151,8 @@
       "attachment": false,
       "structured_output": false,
       "temperature": true,
-      "notes": "Reasoning is a toggle (reasoning.enabled = true|false)."
+      "notes": "Reasoning is a toggle (reasoning.enabled = true|false).",
+      "status": "deprecated"
     },
     {
       "id": "ling-3.0-flash-fin-free",
@@ -161,7 +165,8 @@
       "attachment": false,
       "structured_output": false,
       "temperature": true,
-      "notes": "Finance-tuned. Reasoning is a toggle."
+      "notes": "Finance-tuned. Reasoning is a toggle.",
+      "status": "deprecated"
     },
     {
       "id": "deepseek-v4-flash-free",
@@ -225,7 +230,8 @@
         "output": [
           "text"
         ]
-      }
+      },
+      "status": "deprecated"
     },
     {
       "id": "muse-spark-1.2-contributor-free",
@@ -248,7 +254,107 @@
       "supported": false,
       "context": 64000,
       "output": 0,
-      "notes": "Not a chat model: it answers typed questions over /zen/v1/systemone. Not proxied."
+      "notes": "Not a chat model: it answers typed questions over /zen/v1/systemone. Not proxied.",
+      "structured_output": true
+    },
+    {
+      "id": "beam-free",
+      "name": "Beam Free",
+      "endpoint": "chat",
+      "source": "models.dev",
+      "schema": 2,
+      "reasoning": true,
+      "tool_call": true,
+      "structured_output": true,
+      "baseUrl": "https://opencode.ai/inference/openai/v1",
+      "dynamic": true,
+      "unverified": true,
+      "notes": "Free per models.dev — verify with `npm run doctor`."
+    },
+    {
+      "id": "deepseek-v4.1-flash-free",
+      "name": "DeepSeek V4.1 Flash Free",
+      "endpoint": "chat",
+      "source": "models.dev",
+      "schema": 2,
+      "context": 200000,
+      "output": 32000,
+      "reasoning": true,
+      "tool_call": true,
+      "structured_output": true,
+      "baseUrl": "https://opencode.ai/inference/openai/v1",
+      "dynamic": true,
+      "unverified": true,
+      "notes": "Free per models.dev — verify with `npm run doctor`."
+    },
+    {
+      "id": "flint-40b-free",
+      "name": "Flint 40B Free",
+      "endpoint": "chat",
+      "source": "models.dev",
+      "schema": 2,
+      "output": 65536,
+      "reasoning": true,
+      "structured_output": true,
+      "baseUrl": "https://opencode.ai/inference/openai/v1",
+      "dynamic": true,
+      "unverified": true,
+      "notes": "Free per models.dev — verify with `npm run doctor`."
+    },
+    {
+      "id": "glm-5.3-flash-free",
+      "name": "GLM-5.3-Flash Free",
+      "endpoint": "chat",
+      "source": "models.dev",
+      "schema": 2,
+      "context": 200000,
+      "output": 32000,
+      "reasoning": true,
+      "tool_call": true,
+      "structured_output": true,
+      "attachment": true,
+      "baseUrl": "https://opencode.ai/inference/openai/v1",
+      "modalities": {
+        "input": [
+          "text",
+          "image/jpeg",
+          "image/png",
+          "video/mp4",
+          "video/x-matroska",
+          "video/quicktime"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "dynamic": true,
+      "unverified": true,
+      "notes": "Free per models.dev — verify with `npm run doctor`."
+    },
+    {
+      "id": "nemotron-3.5-super-vl-free",
+      "name": "Nemotron 3.5 Super VL Free",
+      "endpoint": "chat",
+      "source": "models.dev",
+      "schema": 2,
+      "input": 1048576,
+      "output": 131072,
+      "reasoning": true,
+      "attachment": true,
+      "baseUrl": "https://opencode.ai/inference/openai/v1",
+      "modalities": {
+        "input": [
+          "text",
+          "image/jpeg",
+          "image/png"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "dynamic": true,
+      "unverified": true,
+      "notes": "Free per models.dev — verify with `npm run doctor`."
     }
   ],
   "retired": {

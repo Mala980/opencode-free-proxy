@@ -21,13 +21,16 @@ import {
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const TOML_DIR = path.join(HERE, "fixtures", "models-dev-toml");
-const API_FIXTURE = JSON.parse(fs.readFileSync(path.join(HERE, "fixtures", "models-dev-api.json"), "utf8"));
+const TOML_V1 = path.join(HERE, "fixtures", "models-dev-toml-v1");
+const TOML_V2 = path.join(HERE, "fixtures", "models-dev-toml-v2");
+const API_V1 = JSON.parse(fs.readFileSync(path.join(HERE, "fixtures", "models-dev-api-v1.json"), "utf8"));
+const API_V2 = JSON.parse(fs.readFileSync(path.join(HERE, "fixtures", "models-dev-api-v2.json"), "utf8"));
 
-const read = (name) => fs.readFileSync(path.join(TOML_DIR, name), "utf8");
+
+const read = (name) => fs.readFileSync(path.join(TOML_V1, name), "utf8");
 const tomlFiles = () =>
   fs
-    .readdirSync(TOML_DIR)
+    .readdirSync(TOML_V1)
     .filter((f) => f.endsWith(".toml"))
     .map((name) => ({ name, content: read(name) }));
 
@@ -108,12 +111,12 @@ describe("free-model selection", () => {
   });
 
   test("a paid model never becomes an entry", () => {
-    const paid = API_FIXTURE.opencode.models["gpt-5.6-sol"];
+    const paid = API_V1.opencode.models["gpt-5.6-sol"];
     assert.equal(entryFromModelsDev("gpt-5.6-sol", paid), null);
   });
 
   test("api.json and the TOML files agree on the free list", () => {
-    const fromApi = freeModelsFromApi(API_FIXTURE, "opencode").map((m) => m.id);
+    const fromApi = freeModelsFromApi(API_V1, "opencode").map((m) => m.id);
     const fromToml = freeModelsFromTomls(tomlFiles()).map((m) => m.id);
     assert.deepEqual(fromApi, fromToml);
     assert.deepEqual(fromApi, [
@@ -127,7 +130,7 @@ describe("free-model selection", () => {
   });
 
   test("entries carry the capability metadata opencode publishes", () => {
-    const [pickle] = freeModelsFromApi(API_FIXTURE, "opencode").filter((m) => m.id === "big-pickle");
+    const [pickle] = freeModelsFromApi(API_V1, "opencode").filter((m) => m.id === "big-pickle");
     assert.equal(pickle.name, "Big Pickle");
     assert.equal(pickle.endpoint, "chat");
     assert.equal(pickle.source, "models.dev");
@@ -139,7 +142,7 @@ describe("free-model selection", () => {
     assert.equal(pickle.attachment, false);
     assert.equal(pickle.structured_output, true);
 
-    const [muse] = freeModelsFromApi(API_FIXTURE, "opencode").filter(
+    const [muse] = freeModelsFromApi(API_V1, "opencode").filter(
       (m) => m.id === "muse-spark-1.3-contributor-free",
     );
     assert.equal(muse.attachment, true);
@@ -147,7 +150,7 @@ describe("free-model selection", () => {
   });
 
   test("models.dev 'deprecated' is exposed, never used to hide by itself", () => {
-    const byId = Object.fromEntries(freeModelsFromApi(API_FIXTURE, "opencode").map((m) => [m.id, m]));
+    const byId = Object.fromEntries(freeModelsFromApi(API_V1, "opencode").map((m) => [m.id, m]));
     assert.equal(byId["glm-4.7-free"].deprecated, true);
     assert.equal(byId["big-pickle"].deprecated, undefined);
   });
@@ -161,7 +164,7 @@ describe("free-model selection", () => {
 });
 
 describe("fetchFreeModels", () => {
-  const apiFetch = async () => ({ ok: true, json: async () => API_FIXTURE });
+  const apiFetch = async () => ({ ok: true, json: async () => API_V1 });
 
   test("reads models.dev/api.json when it is reachable", async () => {
     const result = await fetchFreeModels({ fetchImpl: apiFetch });
@@ -210,5 +213,84 @@ describe("fetchFreeModels", () => {
       }),
       /openai/,
     );
+  });
+});
+
+describe("models.dev schema 2 (current upstream shape)", () => {
+  const v2Files = () =>
+    fs
+      .readdirSync(TOML_V2)
+      .filter((f) => f.endsWith(".toml"))
+      .map((name) => ({ name, content: fs.readFileSync(path.join(TOML_V2, name), "utf8") }));
+
+  test("every file declares schema 2", () => {
+    const files = v2Files();
+    assert.ok(files.length >= 4);
+    for (const file of files) {
+      assert.equal(parseToml(file.content).schema, 2, `${file.name} is on the current schema`);
+    }
+  });
+
+  test("prices are nested per modality now", () => {
+    const big = parseToml(fs.readFileSync(path.join(TOML_V2, "big-pickle.toml"), "utf8"));
+    assert.deepEqual(big.cost, {
+      text: { input: { price: 0, cache: { read: 0, write: 0 } }, output: { price: 0 } },
+    });
+    assert.equal(isFreeCost(big.cost), true);
+
+    const paid = parseToml(fs.readFileSync(path.join(TOML_V2, "gpt-5.6-sol.toml"), "utf8"));
+    assert.equal(paid.cost.text.input.price, 4);
+    assert.equal(paid.cost.text.input.overrides[0].price, 8, "context overrides are prices too");
+    assert.equal(isFreeCost(paid.cost), false);
+    assert.equal(entryFromModelsDev("gpt-5.6-sol", paid), null);
+  });
+
+  test("capabilities moved under [capabilities]", () => {
+    const [pickle] = freeModelsFromApi(API_V2, "opencode").filter((m) => m.id === "big-pickle");
+    assert.equal(pickle.schema, 2);
+    assert.equal(pickle.reasoning, true, "capabilities.reasoning.supported");
+    assert.equal(pickle.tool_call, true, "capabilities.tools.supported");
+    assert.equal(pickle.structured_output, true);
+    assert.equal(pickle.temperature, true);
+    assert.equal(pickle.context, 200000);
+    assert.equal(pickle.attachment, false, "text-only modalities");
+  });
+
+  test("attachment is derived from the input modalities", () => {
+    const byId = Object.fromEntries(freeModelsFromApi(API_V2, "opencode").map((m) => [m.id, m]));
+    assert.equal(byId["big-pickle"].attachment, false);
+    const multimodal = entryFromModelsDev("vision-free", {
+      schema: 2,
+      name: "Vision Free",
+      cost: { text: { input: { price: 0 }, output: { price: 0 } } },
+      modalities: { input: ["text", "image"], output: ["text"] },
+    });
+    assert.equal(multimodal.attachment, true);
+  });
+
+  test("the endpoint follows the api table", () => {
+    const chat = entryFromModelsDev("beam-free", API_V2.opencode.models["beam-free"]);
+    assert.equal(chat.endpoint, "chat");
+    const responses = entryFromModelsDev("paid-responses-free", {
+      schema: 2,
+      name: "Paid Responses",
+      cost: { text: { input: { price: 0 }, output: { price: 0 } } },
+      api: { responses: { base_url: "https://opencode.ai/inference/openai/v1" } },
+    });
+    assert.equal(responses.endpoint, "responses");
+  });
+
+  test("the upstream base URL upstream publishes is captured", () => {
+    const [pickle] = freeModelsFromApi(API_V2, "opencode").filter((m) => m.id === "big-pickle");
+    assert.equal(pickle.baseUrl, "https://opencode.ai/inference/openai/v1");
+  });
+
+  test("both schemas produce the same verdict for the same model", () => {
+    const fromV1 = freeModelsFromApi(API_V1, "opencode").find((m) => m.id === "big-pickle");
+    const fromV2 = freeModelsFromApi(API_V2, "opencode").find((m) => m.id === "big-pickle");
+    assert.equal(fromV1.reasoning, fromV2.reasoning);
+    assert.equal(fromV1.tool_call, fromV2.tool_call);
+    assert.equal(fromV1.attachment, fromV2.attachment);
+    assert.equal(fromV1.context, fromV2.context);
   });
 });

@@ -32,10 +32,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const PROXY_VERSION = "1.1.0";
 
 // Latest stable opencode 1.x (the line that still ships the Zen free tier
-// flow this proxy mimics). opencode 2.0.22 exists and uses the same
+// flow this proxy mimics). opencode 2.1.4 is on the dev branch and uses the same
 // `Bearer public` free-tier path — override with OC_VERSION if you want.
-const OC_VERSION_DEFAULT = "1.18.34";
-const OC_RUNTIME_DEFAULT = "bun/1.3.14";
+const OC_VERSION_DEFAULT = "1.19.4";
+const OC_RUNTIME_DEFAULT = "bun/1.4.4";
 const OC_PROVIDER_UTILS = "4.0.23";
 
 // ── Config ─────────────────────────────────────────────────────────

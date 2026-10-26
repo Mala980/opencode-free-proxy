@@ -127,6 +127,13 @@ async function main() {
     process.exit(1);
   }
 
+  // Everything the proxy has to impersonate is read back out of the captured
+  // User-Agent, so the fixture never carries a hardcoded guess.
+  const chat = requests.find((r) => r.endpoint === "chat/completions") || requests[0];
+  const ua = chat?.headers["user-agent"] || "";
+  const runtime = ua.match(/runtime\/(\S+)/)?.[1] || "unknown";
+  const providerUtils = ua.match(/ai-sdk\/provider-utils\/(\S+)/)?.[1] || "unknown";
+
   fs.mkdirSync(FIXTURES, { recursive: true });
   const file = path.join(FIXTURES, `opencode-cli-${version.replace(/^v/, "")}.json`);
   fs.writeFileSync(
@@ -136,7 +143,7 @@ async function main() {
         $comment:
           "Captured from the real OpenCode CLI by pointing it at a local server (scripts/capture-cli-fixture.mjs). Contract test: what this proxy sends must stay equivalent to what the official client sends.",
         capturedAt: new Date().toISOString().slice(0, 10),
-        cli: { package: "opencode-linux-x64", version: version.replace(/^v/, ""), runtime: "bun/1.3.14" },
+        cli: { package: "opencode-linux-x64", version: version.replace(/^v/, ""), runtime, providerUtils },
         requests,
       },
       null,
@@ -144,7 +151,6 @@ async function main() {
     )}\n`,
   );
 
-  const chat = requests.find((r) => r.endpoint === "chat/completions");
   console.log(`Wrote ${file}`);
   console.log(`  user-agent : ${chat?.headers["user-agent"]}`);
   console.log(`  tools      : ${chat?.body.toolNames.join(", ")}`);
