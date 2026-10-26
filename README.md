@@ -249,7 +249,7 @@ WantedBy=multi-user.target
 | `KEYS_FILE` | `./api-keys.json` | API keys file |
 | `PROXY_API_KEY` | – | Force a single fixed key (handy in Docker) |
 | `PUBLIC_MODELS` | `0` | `1` = `/v1/models` needs no key |
-| `ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | Upstream (also useful for testing against a mock) |
+| `ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | Upstream base. models.dev now publishes `https://opencode.ai/inference/openai/v1` for the same models — nothing is hardcoded, so switching is one env var (also useful for testing against a mock) |
 | `ZEN_API_KEY` | `public` | Zen key — leave as `public` for the free tier, or drop in a real Zen key |
 | `ZEN_TIMEOUT_MS` | `120000` | Upstream timeout → `504` |
 | `MAX_BODY_BYTES` | `12582912` | Request body limit (12 MB) |
@@ -491,6 +491,7 @@ transparently retry on the next free model instead.
 | A model vanished after enabling `REFRESH_SOURCE=both` | models.dev now prices it above zero (or does not publish it). Check `/health` → `modelsDev.free` |
 | The log stops after `[MODELS] Refreshed from Zen: …` | Not stuck — the probe round is running in the background (up to `VERIFY_STARTUP_TIMEOUT_MS`). The port is already open; watch `GET /health` → `verification.running`, or skip it with `VERIFY_MODELS=0` |
 | Startup waits a minute before printing `models` | Zen is slow to answer probes. Lower `VERIFY_TIMEOUT_MS` / `VERIFY_STARTUP_TIMEOUT_MS`, or raise `VERIFY_CONCURRENCY` |
+| Every model returns 404/401, or `update:models` prints `! models.dev publishes …` | The upstream base may have moved. `npm run doctor` against the other path: `ZEN_BASE_URL=https://opencode.ai/inference/openai/v1 npm run doctor` |
 | `UNREACHABLE` | Network/DNS. Check you can `curl https://opencode.ai/zen/v1/models` |
 
 ## Notes

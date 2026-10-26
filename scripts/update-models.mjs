@@ -25,7 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
-import { fetchFreeModels } from "../lib/models-dev.mjs";
+import { baseUrlAdvice, fetchFreeModels } from "../lib/models-dev.mjs";
 
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const MODELS_FILE = process.env.MODELS_FILE || path.join(HERE, "models.json");
@@ -163,6 +163,11 @@ async function main() {
   } else if (devError) {
     console.error(`! models.dev unreachable (${devError}) — keeping the bundled free list`);
   }
+  const advice = dev
+    ? baseUrlAdvice(dev.models.map((m) => m.baseUrl), ZEN_BASE)
+    : null;
+  if (advice) console.error(`! ${advice}`);
+
   if (live) {
     console.log(`Zen lists ${live.size} models.`);
   } else {

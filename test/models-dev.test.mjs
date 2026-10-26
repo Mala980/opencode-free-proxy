@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  baseUrlAdvice,
   entryFromModelsDev,
   fetchFreeModels,
   freeModelsFromApi,
@@ -292,5 +293,24 @@ describe("models.dev schema 2 (current upstream shape)", () => {
     assert.equal(fromV1.tool_call, fromV2.tool_call);
     assert.equal(fromV1.attachment, fromV2.attachment);
     assert.equal(fromV1.context, fromV2.context);
+  });
+});
+
+describe("base URL drift", () => {
+
+  test("stays quiet when the configured base is one of the published ones", () => {
+    assert.equal(baseUrlAdvice(["https://opencode.ai/inference/openai/v1", "https://opencode.ai/zen/v1"], "https://opencode.ai/zen/v1"), null);
+    assert.equal(baseUrlAdvice(["https://opencode.ai/zen/v1/"], "https://opencode.ai/zen/v1"), null, "trailing slash is ignored");
+  });
+
+  test("says which base URL to use when upstream moved", () => {
+    const advice = baseUrlAdvice(["https://opencode.ai/inference/openai/v1"], "https://opencode.ai/zen/v1");
+    assert.match(advice, /inference\/openai\/v1/);
+    assert.match(advice, /ZEN_BASE_URL=https:\/\/opencode\.ai\/inference\/openai\/v1/);
+  });
+
+  test("no published URL means nothing to compare against", () => {
+    assert.equal(baseUrlAdvice([], "https://opencode.ai/zen/v1"), null);
+    assert.equal(baseUrlAdvice([undefined, ""], "https://opencode.ai/zen/v1"), null);
   });
 });
