@@ -5,6 +5,14 @@
  *   npm run doctor
  *   npm run doctor -- --server http://127.0.0.1:6446 --key oc-xxxx
  *   npm run doctor -- --model big-pickle --verbose
+ *   npm run doctor -- --apply     # write NOT USABLE verdicts back to models.json
+ *
+ * --apply switches off the models Zen refuses (`supported: false` plus an
+ * entry in `retired`, which is what makes `/v1/models` answer 404 with a
+ * reason). Only `unavailable` is recorded: a rate limit is a quota, a region
+ * error is geography, and a network error is not the model's fault — none of
+ * those should disable a model permanently. Undo with `git checkout models.json`
+ * or by flipping `supported` back to true.
  *
  * Without --server it talks to Zen directly, using exactly the same
  * fingerprint the proxy uses (canonical ses_ id, opencode User-Agent,
@@ -38,6 +46,7 @@ const SERVER = getArg("server", process.env.PROXY_URL || "");
 const TIMEOUT = Number(getArg("timeout", process.env.ZEN_TIMEOUT_MS || 45000));
 const ONLY = getArg("model", "");
 const VERBOSE = hasFlag("verbose");
+const APPLY = hasFlag("apply");
 
 async function request(url, headers, body, timeoutMs) {
   const ctl = new AbortController();
@@ -135,10 +144,12 @@ async function main() {
   }
 
   let working = 0;
+  const dead = [];
   for (const model of models) {
     const result = SERVER ? await probeProxy(model, SERVER, key) : await probeZen(model);
     const mark = result.ok ? (result.label === "OK" ? "✓" : "~") : "✗";
     if (result.ok) working += 1;
+    if (APPLY && result.status === "unavailable") dead.push({ id: model.id, detail: result.detail });
     console.log(
       `${mark} ${model.id.padEnd(34)} ${result.label.padEnd(16)} ${String(result.ms).padStart(6)}ms  ${result.note || String(result.detail).slice(0, 40)}`,
     );
@@ -150,6 +161,34 @@ async function main() {
     console.log("No proxy API key found — pass --key or set PROXY_API_KEY.");
     process.exit(1);
   }
+  if (APPLY) {
+    if (!dead.length) {
+      console.log("\n--apply: nothing to record — no model was refused by Zen.");
+    } else {
+      const today = new Date().toISOString().slice(0, 10);
+      const retired = { ...catalog.retired };
+      let changed = 0;
+      for (const { id, detail } of dead) {
+        const model = catalog.models.find((m) => m.id === id);
+        if (!model || model.supported === false) continue;
+        model.supported = false;
+        retired[id] = `Zen refused it on ${today} (${detail}). Re-check with \`npm run doctor\`.`;
+        changed += 1;
+      }
+      if (!changed) {
+        console.log("\n--apply: every refused model was already switched off.");
+      } else {
+        fs.writeFileSync(
+          MODELS_FILE,
+          `${JSON.stringify({ ...catalog, updated: today, retired }, null, 2)}\n`,
+        );
+        console.log(`\n--apply: switched off ${changed} model(s) in ${MODELS_FILE}`);
+        console.log(`  ${dead.map((d) => d.id).join(", ")}`);
+        console.log("  Undo: git checkout models.json  (or set supported back to true)");
+      }
+    }
+  }
+
   if (working === 0) {
     console.log(
       SERVER

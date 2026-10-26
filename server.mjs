@@ -97,6 +97,10 @@ export function loadConfig(overrides = {}) {
     // first round gives up waiting after this budget (the probes that are
     // still in flight keep running and land in the next health report).
     verifyStartupTimeoutMs: num(process.env.VERIFY_STARTUP_TIMEOUT_MS, 60000),
+    // models.dev marks superseded models `deprecated`, and every one of them
+    // turned out to be refused by Zen. Off by default — the live probe stays
+    // the authority — but it saves a probe per legacy model.
+    hideDeprecated: process.env.HIDE_DEPRECATED === "1",
   };
   return { ...cfg, ...overrides };
 }
@@ -276,9 +280,10 @@ function activeModels(catalog, state) {
   // curated / suffix decision.
   const onZen = (id) => !state.liveIds || state.liveIds.has(id);
   const isFree = (id) => !state.freeIds || state.freeIds.has(id) || !state.devIds.has(id);
+  const isCurrent = (model) => !state.hideDeprecated || !(model.deprecated || model.status === "deprecated");
 
   for (const model of curated) {
-    if (!onZen(model.id) || !isFree(model.id)) continue;
+    if (!onZen(model.id) || !isFree(model.id) || !isCurrent(model)) continue;
     const upstream = fromModelsDev.get(model.id);
     out.push(upstream ? mergeWithModelsDev(model, upstream) : model);
     seen.add(model.id);
@@ -288,7 +293,7 @@ function activeModels(catalog, state) {
   // Without Zen to cross-check them we skip the ones upstream already marked
   // deprecated, so a Zen outage cannot flood /v1/models with legacy ids.
   for (const [id, entry] of fromModelsDev) {
-    if (seen.has(id) || blocked.has(id) || !onZen(id)) continue;
+    if (seen.has(id) || blocked.has(id) || !onZen(id) || !isCurrent(entry)) continue;
     if (!state.liveIds && entry.deprecated) continue;
     out.push({ ...entry, dynamic: true, unverified: true });
     seen.add(id);
@@ -893,6 +898,7 @@ export function createServer(overrides = {}) {
     verifying: false,
     ready: false,
     startup: null,
+    hideDeprecated: cfg.hideDeprecated,
   };
 
   const candidates = () => activeModels(catalog, state);
@@ -1174,6 +1180,7 @@ export function createServer(overrides = {}) {
           },
           verification: {
             enabled: cfg.verify,
+            hideDeprecated: cfg.hideDeprecated,
             running: state.verifying,
             ready: state.ready,
             lastRun: state.lastVerifyAt ? new Date(state.lastVerifyAt).toISOString() : null,

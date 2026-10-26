@@ -274,6 +274,7 @@ WantedBy=multi-user.target
 | `VERIFY_TIMEOUT_MS` | `20000` | Per-model probe timeout |
 | `VERIFY_CONCURRENCY` | `4` | Parallel probes |
 | `VERIFY_STARTUP_TIMEOUT_MS` | `60000` | How long startup waits for the first probe round — verification never blocks the port |
+| `HIDE_DEPRECATED` | `0` | `1` = never advertise models models.dev marks `deprecated` (they turned out to be refused by Zen) without probing them |
 
 ## Where the free list comes from
 
@@ -326,6 +327,20 @@ that it is gone. The proxy surfaces it (`deprecation: "deprecated"` in
 ✗ nemotron-3-super-free              NOT ON ZEN        310ms  model id no longer served
 ```
 
+Read it like this: `OK` and `RATE LIMITED` both mean the model is alive (a rate
+limit is the shared anonymous quota, not the model's fault — retry later or set
+`FALLBACK=1`), while `NOT USABLE` means Zen refuses it. Recording that last
+verdict in the catalog is one flag away:
+
+```bash
+npm run doctor -- --apply     # switches off every NOT USABLE model, with a reason
+```
+
+`--apply` sets `supported: false` and adds a `retired` entry, so `/v1/models`
+answers 404 with what happened. Only `unavailable` is recorded — a region block
+is geography and a rate limit is a quota, neither should disable a model for
+good. Undo with `git checkout models.json`.
+
 ## Only models that really work are advertised
 
 The Zen model list is not the truth: it keeps ids that answer
@@ -336,6 +351,11 @@ means your client happily offers a model that fails on every call.
 So at startup — and every `VERIFY_INTERVAL_MS` (default 30 min) — the proxy
 sends one tiny request per model (`stream:true`, `max_tokens:16`, about 15
 tokens each) and classifies the answer:
+
+models.dev marks superseded models `deprecated`, and in practice every one of
+them is refused by Zen — so `HIDE_DEPRECATED=1` skips them outright instead of
+probing them first. It stays off by default: the live probe is the authority,
+and a "deprecated" model that still answers is still free.
 
 The port is bound **first**, so a slow Zen can never leave you staring at a
 frozen console: verification runs in the background, logs one line per model
@@ -463,7 +483,7 @@ transparently retry on the next free model instead.
 | Symptom | What to do |
 |---------|-----------|
 | `FreeTierError: ... can only be used from within OpenCode` | `npm run doctor`. If it says `FREE-TIER GATE`, Zen retuned a gate — check the table above and try `ZEN_TOOL_SET` / `OC_VERSION` |
-| `RATE LIMITED` on every model | The anonymous quota is per egress IP and shared; wait, or set `ZEN_API_KEY` to a real Zen key |
+| `RATE LIMITED` on every model | The anonymous quota is per egress IP and shared; wait, set `FALLBACK=1` so the proxy hops to the next free model, or set `ZEN_API_KEY` to a real Zen key |
 | `REGION BLOCKED` on `muse-spark-*-free` / `fledge-alpha-free` | Geoblocked at the Zen layer, nothing the proxy can do — pick another model |
 | `NOT USABLE` / `NOT ON ZEN` | The model rotated out or is geoblocked. It is auto-hidden from `/v1/models`; `npm run update:models` refreshes the catalog |
 | `/v1/models` is empty or missing a model | Check `GET /health` → `verification.hidden` and `modelsDev.error`; set `VERIFY_MODELS=0` to see the raw catalog |

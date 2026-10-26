@@ -931,3 +931,79 @@ describe("models.dev as the free-model source", () => {
     });
   });
 });
+
+describe("hiding models upstream already deprecated", () => {
+  const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "models-dev-api-v2.json");
+  const API_FIXTURE = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
+
+  function withServer(overrides, fn) {
+    const tmpKeys = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocph-")), "keys.json");
+    fs.writeFileSync(tmpKeys, JSON.stringify(KEYS));
+    const instance = createServer({
+      port: 0,
+      host: "127.0.0.1",
+      zenBase: app.cfg.zenBase,
+      keysFile: tmpKeys,
+      logRequests: false,
+      verify: false,
+      refreshModels: false,
+      ...overrides,
+    });
+    return instance.listen().then(async (addr) => {
+      await instance.ready();
+      try {
+        return await fn(`http://127.0.0.1:${addr.port}`, instance);
+      } finally {
+        await instance.close();
+      }
+    });
+  }
+
+  test("deprecated models are served by default (the probe decides)", async () => {
+    await withServer({}, async (baseUrl) => {
+      const ids = (await (await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${KEYS.tester}` } })).json()).data.map(
+        (m) => m.id,
+      );
+      assert.ok(ids.includes("space-bunny-free"), "deprecated upstream, still listed");
+    });
+  });
+
+  test("HIDE_DEPRECATED=1 drops the models upstream marked superseded", async () => {
+    await withServer({ hideDeprecated: true }, async (baseUrl) => {
+      const data = (await (await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${KEYS.tester}` } })).json()).data;
+      const ids = data.map((m) => m.id);
+      assert.ok(!ids.includes("space-bunny-free"), "marked deprecated upstream");
+      assert.ok(!ids.includes("mimo-v2.5-free"), "marked deprecated upstream");
+      assert.ok(ids.includes("big-pickle"), "not deprecated, stays");
+      assert.ok(ids.includes("beam-free"), "not deprecated, stays");
+      for (const model of data) {
+        assert.equal(model.deprecation, null, "no deprecated model survives");
+      }
+    });
+  });
+
+  test("it also applies to models.dev entries we do not curate", async () => {
+    const mock = http.createServer((req, res) => {
+      const text = JSON.stringify(API_FIXTURE);
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(text) });
+      res.end(text);
+    });
+    const port = await new Promise((resolve) => mock.listen(0, "127.0.0.1", () => resolve(mock.address().port)));
+    try {
+      await withServer(
+        { hideDeprecated: true, refreshSource: "models-dev", modelsDevUrl: `http://127.0.0.1:${port}/api.json` },
+        async (baseUrl) => {
+          const health = await (await fetch(`${baseUrl}/health`)).json();
+          assert.equal(health.verification.hideDeprecated, true);
+          const ids = (await (await fetch(`${baseUrl}/v1/models`, { headers: { Authorization: `Bearer ${KEYS.tester}` } })).json()).data.map(
+            (m) => m.id,
+          );
+          assert.ok(!ids.includes("glm-4.7-free"), "deprecated per models.dev");
+          assert.ok(ids.includes("beam-free"));
+        },
+      );
+    } finally {
+      await new Promise((resolve) => mock.close(resolve));
+    }
+  });
+});

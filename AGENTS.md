@@ -71,6 +71,9 @@ Two rules for tests:
 The free tier is a moving target. In order of freshness:
 
 1. `npm run doctor` — probes every model live, reports which ones work.
+   `npm run doctor -- --apply` writes the `NOT USABLE` verdicts back into
+   `models.json` (`supported: false` + a `retired` reason); nothing else is
+   recorded, because a rate limit or a region block is not the model's fault.
 2. `npm run update:models` — rewrites `models.json` from **models.dev**
    (the catalogue opencode ships, free = every price is zero) crossed with
    Zen's live list (`--check` exits non-zero when the catalog is stale; CI
