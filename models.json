@@ -55,7 +55,8 @@
           "text"
         ]
       },
-      "status": "deprecated"
+      "status": "deprecated",
+      "supported": false
     },
     {
       "id": "longcat-2.5-preview-free",
@@ -69,7 +70,8 @@
       "structured_output": false,
       "temperature": false,
       "notes": "Zero-retention provider. Thinking is toggleable.",
-      "status": "deprecated"
+      "status": "deprecated",
+      "supported": false
     },
     {
       "id": "mimo-v2.6-flash-free",
@@ -104,7 +106,8 @@
           "text"
         ]
       },
-      "status": "deprecated"
+      "status": "deprecated",
+      "supported": false
     },
     {
       "id": "nemotron-3-ultra-free",
@@ -125,7 +128,8 @@
         "output": [
           "text"
         ]
-      }
+      },
+      "supported": false
     },
     {
       "id": "nemotron-3.5-lightning-free",
@@ -152,7 +156,8 @@
       "structured_output": false,
       "temperature": true,
       "notes": "Reasoning is a toggle (reasoning.enabled = true|false).",
-      "status": "deprecated"
+      "status": "deprecated",
+      "supported": false
     },
     {
       "id": "ling-3.0-flash-fin-free",
@@ -166,7 +171,8 @@
       "structured_output": false,
       "temperature": true,
       "notes": "Finance-tuned. Reasoning is a toggle.",
-      "status": "deprecated"
+      "status": "deprecated",
+      "supported": false
     },
     {
       "id": "deepseek-v4-flash-free",
@@ -180,7 +186,8 @@
       "structured_output": true,
       "temperature": true,
       "status": "deprecated",
-      "notes": "Marked deprecated upstream but still served. Reasoning effort: low|high|max."
+      "notes": "Marked deprecated upstream but still served. Reasoning effort: low|high|max.",
+      "supported": false
     },
     {
       "id": "mimo-v2.5-free",
@@ -205,7 +212,8 @@
         "output": [
           "text"
         ]
-      }
+      },
+      "supported": false
     },
     {
       "id": "muse-spark-1.3-contributor-free",
@@ -218,7 +226,7 @@
       "attachment": true,
       "structured_output": true,
       "temperature": true,
-      "notes": "Served on the OpenAI Responses endpoint — use POST /v1/responses.",
+      "notes": "Served on the OpenAI Responses endpoint \u2014 use POST /v1/responses.",
       "modalities": {
         "input": [
           "text",
@@ -231,7 +239,8 @@
           "text"
         ]
       },
-      "status": "deprecated"
+      "status": "deprecated",
+      "supported": false
     },
     {
       "id": "muse-spark-1.2-contributor-free",
@@ -245,7 +254,8 @@
       "structured_output": true,
       "temperature": true,
       "status": "deprecated",
-      "notes": "Served on the OpenAI Responses endpoint — use POST /v1/responses."
+      "notes": "Served on the OpenAI Responses endpoint \u2014 use POST /v1/responses.",
+      "supported": false
     },
     {
       "id": "jev-1.13-free",
@@ -269,7 +279,7 @@
       "baseUrl": "https://opencode.ai/inference/openai/v1",
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev — verify with `npm run doctor`."
+      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
     },
     {
       "id": "deepseek-v4.1-flash-free",
@@ -285,7 +295,7 @@
       "baseUrl": "https://opencode.ai/inference/openai/v1",
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev — verify with `npm run doctor`."
+      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
     },
     {
       "id": "flint-40b-free",
@@ -299,7 +309,7 @@
       "baseUrl": "https://opencode.ai/inference/openai/v1",
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev — verify with `npm run doctor`."
+      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
     },
     {
       "id": "glm-5.3-flash-free",
@@ -329,7 +339,7 @@
       },
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev — verify with `npm run doctor`."
+      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
     },
     {
       "id": "nemotron-3.5-super-vl-free",
@@ -354,12 +364,22 @@
       },
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev — verify with `npm run doctor`."
+      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
     }
   ],
   "retired": {
     "minimax-m2.5-free": "Removed from Zen (MiniMax M2.5 deprecated 2026-08-05). Use mimo-v2.6-flash-free or big-pickle.",
-    "nemotron-3-super-free": "Replaced upstream. Use nemotron-3-ultra-free or nemotron-3.5-lightning-free.",
-    "qwen3.6-plus-free": "No longer free on Zen. Use big-pickle, space-bunny-free or longcat-2.5-preview-free."
+    "nemotron-3-super-free": "Replaced upstream. Use nemotron-3.5-lightning-free or big-pickle.",
+    "qwen3.6-plus-free": "No longer free on Zen. Use big-pickle, mimo-v2.6-flash-free or beam-free.",
+    "space-bunny-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "longcat-2.5-preview-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "fledge-alpha-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "nemotron-3-ultra-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "ling-3.1-flash-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "ling-3.0-flash-fin-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "deepseek-v4-flash-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "mimo-v2.5-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "muse-spark-1.3-contributor-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.",
+    "muse-spark-1.2-contributor-free": "Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json."
   }
 }

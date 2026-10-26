@@ -214,6 +214,57 @@ let upstream;
 let app;
 let base;
 let keyFile;
+let modelsFile;
+
+/**
+ * The suite runs against its own catalog, not the shipped one: `npm run doctor
+ * -- --apply` and `npm run update:models` change models.json constantly, and a
+ * test must not start failing because a real model rotated out.
+ */
+function writeCatalog() {
+  const model = (id, endpoint, extra = {}) => ({
+    id,
+    name: id.replace(/-/g, " ").replace(/^\w/, (c) => c.toUpperCase()),
+    endpoint,
+    context: 200000,
+    output: 32000,
+    reasoning: true,
+    tool_call: true,
+    attachment: false,
+    ...extra,
+  });
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocp-cat-")), "models.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        updated: "2026-10-26",
+        opencodeVersion: "1.19.4",
+        models: [
+          model("big-pickle", "chat"),
+          model("mimo-v2.6-flash-free", "chat"),
+          model("nemotron-3.5-lightning-free", "chat"),
+          model("beam-free", "chat"),
+          model("deepseek-v4.1-flash-free", "chat"),
+          model("glm-5.3-flash-free", "chat", { attachment: true, modalities: { input: ["text", "image/jpeg"] } }),
+          model("space-bunny-free", "chat", { context: 1048576, attachment: true, status: "deprecated" }),
+          model("longcat-2.5-preview-free", "chat", { context: 1000000 }),
+          model("mimo-v2.5-free", "chat", { status: "deprecated" }),
+          model("deepseek-v4-flash-free", "chat", { status: "deprecated" }),
+          model("muse-spark-1.3-contributor-free", "responses", { context: 1048576 }),
+          { ...model("jev-1.13-free", "chat"), supported: false },
+        ],
+        retired: {
+          "qwen3.6-plus-free": "No longer free on Zen.",
+          "minimax-m2.5-free": "Removed from Zen (MiniMax M2.5 deprecated 2026-08-05). Use mimo-v2.6-flash-free or big-pickle.",
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  return file;
+}
 
 const sockets = new Set();
 
@@ -222,11 +273,13 @@ before(async () => {
   const upstreamPort = await upstream.listen();
   keyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocp-")), "api-keys.json");
   fs.writeFileSync(keyFile, JSON.stringify(KEYS));
+  modelsFile = writeCatalog();
   app = createServer({
     port: 0,
     host: "127.0.0.1",
     zenBase: `http://127.0.0.1:${upstreamPort}/v1`,
     keysFile: keyFile,
+    modelsFile,
     logRequests: false,
     verify: false,
   });
@@ -307,6 +360,7 @@ async function withProxy(overrides, fn) {
     host: "127.0.0.1",
     zenBase: app.cfg.zenBase,
     keysFile: tmpKeys,
+    modelsFile: app.cfg.modelsFile,
     logRequests: false,
     verify: false,
     ...overrides,
@@ -810,6 +864,7 @@ describe("models.dev as the free-model source", () => {
         host: "127.0.0.1",
         zenBase: app.cfg.zenBase,
         keysFile: tmpKeys,
+        modelsFile: app.cfg.modelsFile,
         logRequests: false,
         verify: false,
         modelsDevUrl: `http://127.0.0.1:${port}/api.json`,
@@ -835,8 +890,9 @@ describe("models.dev as the free-model source", () => {
     // Split the bundled catalog in two: models.dev prices the first ten at
     // zero and the rest above zero. Only the free half may be advertised.
     const ids = app.catalog.models.filter((m) => m.supported !== false).map((m) => m.id);
-    const zero = ids.slice(0, 10);
-    const priced = ids.slice(10);
+    const zero = ids.filter((_, i) => i % 2 === 0);
+    const priced = ids.filter((_, i) => i % 2 === 1);
+    assert.ok(priced.length, "the split needs a priced half to prove anything");
     const models = {};
     for (const id of zero) models[id] = { name: id, cost: { input: 0, output: 0 } };
     for (const id of priced) models[id] = { name: id, cost: { input: 1, output: 2 } };
@@ -944,6 +1000,7 @@ describe("hiding models upstream already deprecated", () => {
       host: "127.0.0.1",
       zenBase: app.cfg.zenBase,
       keysFile: tmpKeys,
+      modelsFile: app.cfg.modelsFile,
       logRequests: false,
       verify: false,
       refreshModels: false,

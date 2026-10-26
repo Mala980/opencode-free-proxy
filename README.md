@@ -27,18 +27,8 @@ npm run doctor          # verify the free models actually answer from your machi
 | Model | Endpoint | Context | Tools | Notes |
 |-------|----------|--------:|:-----:|-------|
 | `big-pickle` | chat | 200K | ✓ | Stealth model, free for a limited time |
-| `space-bunny-free` | chat | 1.0M | ✓ | Deprecated upstream, still served |
-| `longcat-2.5-preview-free` | chat | 1M | ✓ | Deprecated upstream, still served |
 | `mimo-v2.6-flash-free` | chat | 200K | ✓ | Multimodal |
-| `fledge-alpha-free` | chat | 1.0M | ✓ | Deprecated upstream, still served |
-| `nemotron-3-ultra-free` | chat | 1M | ✓ | NVIDIA trial endpoint |
 | `nemotron-3.5-lightning-free` | chat | 262K | ✓ | NVIDIA trial endpoint |
-| `ling-3.1-flash-free` | chat | 262K | ✓ | Deprecated upstream, still served |
-| `ling-3.0-flash-fin-free` | chat | 262K | ✓ | Deprecated upstream, still served |
-| `deepseek-v4-flash-free` | chat | 200K | ✓ | Deprecated upstream, still served |
-| `mimo-v2.5-free` | chat | 200K | ✓ | Deprecated upstream, still served |
-| `muse-spark-1.3-contributor-free` | responses | 1.0M | ✓ | Deprecated upstream, still served |
-| `muse-spark-1.2-contributor-free` | responses | 1.0M | ✓ | Deprecated upstream, still served |
 | `beam-free` | chat | — | ✓ | New free model on models.dev — unverified on Zen |
 | `deepseek-v4.1-flash-free` | chat | 200K | ✓ | New free model on models.dev — unverified on Zen |
 | `flint-40b-free` | chat | — | — | New free model on models.dev — unverified on Zen |
@@ -60,17 +50,28 @@ catalog even though models.dev prices it at zero) and anything that is not
 free — the proxy only ever exposes models that cost $0 on models.dev.
 
 models.dev marks most of the free catalogue `deprecated` (37 of 47 right now):
-upstream is saying "legacy, superseded", not "gone", so they stay listed and the
-live probe decides. The five `beam-free`/`flint-40b-free`/… rows are new since
-the last sync and still `unverified` — `npm run doctor` settles them.
+upstream is saying "legacy, superseded", not "gone". In practice every single
+one of them was refused by Zen on the last live check, so they are switched off
+in `models.json` (see below) and `HIDE_DEPRECATED=1` skips them outright without
+probing. The five `beam-free`/`flint-40b-free`/… rows are new since the last
+sync and still `unverified` — `npm run doctor` settles them.
 
 ### Removed since older versions of this proxy
 
-`minimax-m2.5-free`, `nemotron-3-super-free` and `qwen3.6-plus-free` are gone from
-Zen. Requests for them return a 404 that tells you what to use instead, e.g.
+Switched off after a live `npm run doctor` (2026-10-26) — Zen answers
+`NOT USABLE` for all of them, and nine were already marked deprecated upstream:
+`space-bunny-free`, `longcat-2.5-preview-free`, `fledge-alpha-free`,
+`nemotron-3-ultra-free`, `ling-3.1-flash-free`, `ling-3.0-flash-fin-free`,
+`deepseek-v4-flash-free`, `mimo-v2.5-free`, `muse-spark-1.3-contributor-free`
+and `muse-spark-1.2-contributor-free`. They stay in `models.json` with
+`supported: false`, so re-enabling one is a one-line edit.
+
+Older removals: `minimax-m2.5-free`, `nemotron-3-super-free` and
+`qwen3.6-plus-free` are gone from Zen. Requests for them (and for any other
+switched-off id) return a 404 that tells you what to use instead, e.g.
 
 ```json
-{ "error": { "message": "minimax-m2.5-free is no longer available. Removed from Zen (MiniMax M2.5 deprecated 2026-08-05). Use mimo-v2.6-flash-free or big-pickle.", "code": "model_retired" } }
+{ "error": { "message": "space-bunny-free is no longer available. Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.", "code": "model_retired" } }
 ```
 
 ## Free-tier gates (read this if you get a 403)
