@@ -3,9 +3,9 @@
   "updated": "2026-10-28",
   "opencodeVersion": "2.2.0",
   "opencodeLatest": "2.2.0",
-  "zenBaseUrl": "https://opencode.ai/zen/v1",
+  "zenBaseUrl": "https://opencode.ai/inference/openai/v1",
   "sources": [
-    "https://opencode.ai/zen/v1/models (live model list)",
+    "https://opencode.ai/inference/openai/v1/models (live model list)",
     "https://opencode.ai/docs/zen/ (endpoints + pricing)",
     "https://github.com/anomalyco/models.dev/tree/dev/providers/opencode/models (capability metadata)"
   ],

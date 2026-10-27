@@ -123,9 +123,9 @@ not prove Zen accepts the profile. Run `npm run compare:zen -- --model
 big-pickle` and `npm run doctor` from a network that can reach Zen; rate limits
 must never mark a model unavailable.
 
-Do not switch the global Zen base URL based only on models.dev metadata. The
-catalog's per-model `baseUrl` values may be used with explicit
-`ZEN_MODEL_BASE_URLS=1`, but the default remains `https://opencode.ai/zen/v1`
-until `https://opencode.ai/zen/v1` and
-`https://opencode.ai/inference/openai/v1` have been compared live using the v2
-profile.
+The v2 model catalog publishes `https://opencode.ai/inference/openai/v1`.
+The user explicitly selected it as the new global default; this does not mean
+live acceptance is verified. Keep `npm run compare:zen` for side-by-side live
+checks against `https://opencode.ai/zen/v1`, and qualify results because mocks
+and request captures cannot prove the live service accepts the request. Users
+can override `ZEN_BASE_URL` to test either route.

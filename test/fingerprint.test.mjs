@@ -50,14 +50,15 @@ describe("parity with the official OpenCode v2 CLI", () => {
     const catalog = JSON.parse(readFileSync(path.join(HERE, "..", "models.json"), "utf8"));
     assert.equal(catalog.opencodeVersion, fixture.cli.version);
     assert.equal(catalog.opencodeLatest, fixture.cli.version);
+    assert.equal(catalog.zenBaseUrl, cfg.zenBase);
     assert.equal(cfg.ocVersion, fixture.cli.version);
     assert.equal(cfg.ocChannel, fixture.cli.channel);
   });
 
-  test("keeps the global Zen path until the two live routes are compared", () => {
-    assert.equal(cfg.zenBase, "https://opencode.ai/zen/v1");
+  test("uses the requested v2 inference base while keeping metadata overrides opt-in", () => {
+    assert.equal(cfg.zenBase, "https://opencode.ai/inference/openai/v1");
     assert.equal(cfg.useModelBaseUrls, false);
-    assert.equal(loadConfig({ useModelBaseUrls: true }).useModelBaseUrls, true, "metadata URLs remain opt-in");
+    assert.equal(loadConfig({ useModelBaseUrls: true }).useModelBaseUrls, true, "per-model metadata URLs remain opt-in");
   });
 
   test("v2 cache-affinity headers are present; the v1 request id is absent", () => {

@@ -41,7 +41,7 @@ const DRY_RUN = args.includes("--dry-run");
 const CHECK = args.includes("--check");
 const NO_MODELS_DEV = args.includes("--no-models-dev");
 
-const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1").replace(/\/+$/, "");
+const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/inference/openai/v1").replace(/\/+$/, "");
 const OC_VERSION = process.env.OC_VERSION || DEFAULT_OC_VERSION;
 const OC_CHANNEL = process.env.OC_CHANNEL || DEFAULT_OC_CHANNEL;
 const MODELS_DEV_URL = process.env.MODELS_DEV_API_URL || "https://models.dev/api.json";

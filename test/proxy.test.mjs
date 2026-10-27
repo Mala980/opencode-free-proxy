@@ -389,6 +389,8 @@ describe("health & discovery", () => {
     const data = res.json();
     assert.equal(data.status, "ok");
     assert.equal(data.upstream.live, true);
+    assert.equal(data.requestProfile.tlsImpersonation, false);
+    assert.match(data.requestProfile.transport, /HTTP\/1\.1/);
     assert.ok(data.models.includes("big-pickle"));
     assert.ok(data.models.includes("brand-new-model-free"), "new free models on Zen are picked up");
     assert.ok(!data.models.includes("gpt-6-astra"), "paid models are never exposed");

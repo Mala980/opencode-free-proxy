@@ -82,7 +82,7 @@ official **OpenCode v2.2.0** Linux CLI (`@opencode/cli-linux-x64`):
 
 | Detail | v2.2.0 CLI capture | This proxy |
 |--------|--------------------|------------|
-| Transport | HTTP `POST /chat/completions`, streamed SSE | HTTP `fetch` + SSE; non-streaming clients are reassembled |
+| Transport | HTTP `POST /chat/completions`, streamed SSE | Node `fetch` over HTTP/1.1 + SSE; non-streaming clients are reassembled |
 | `User-Agent` | `opencode/latest/2.2.0/cli` | Same by default; `OC_VERSION` / `OC_CHANNEL` can override it |
 | Session/cache affinity | `x-opencode-session`, `x-opencode-session-id`, `x-session-affinity`, `X-Session-Id`; fork requests may include parent-session headers | Canonical v2 `ses_…` IDs; preserves valid incoming v2 session, affinity, project, client and parent headers |
 | Streaming | `stream: true`, `stream_options.include_usage: true` | Same defaults; explicit usage preference is preserved |
@@ -101,11 +101,12 @@ unavailability.
 
 ## Live path comparison
 
-models.dev currently publishes `https://opencode.ai/inference/openai/v1` for
-OpenCode models, while this proxy's configured default remains
-`https://opencode.ai/zen/v1`. Their live behavior has not been established by
-the v2 CLI capture. The default is intentionally unchanged until both routes
-are tested with the same v2 request profile.
+models.dev publishes `https://opencode.ai/inference/openai/v1` for OpenCode
+models. At the user's request, this is now the configured default. That choice
+is based on the v2 model catalog, **not** on a live acceptance result; the v2
+CLI capture does not prove that Zen accepts requests there. Compare it with the
+legacy `https://opencode.ai/zen/v1` route using the same v2 request profile
+before drawing a live compatibility conclusion.
 
 From a network that can reach `opencode.ai`, run:
 
@@ -120,6 +121,16 @@ verify generation and does **not** disable the model; `FREE-TIER GATE`,
 verification use `npm run doctor`. To opt into per-model `baseUrl` metadata
 from models.dev, set `ZEN_MODEL_BASE_URLS=1`; this is separate from changing
 the global default.
+
+### TLS / browser fingerprint
+
+This proxy **does not use uTLS, BoringSSL, a Chrome ClientHello fingerprint, or
+HTTP/2 with `h2` ALPN**. It uses Node's built-in `fetch`/Undici transport
+(HTTP/1.1) and Node's TLS stack. The v2 User-Agent and request headers match
+the captured CLI shape, but they do not impersonate Chrome at the TLS layer.
+Changing `ZEN_BASE_URL` does not change that. `GET /health` reports this
+transport limitation. The live path comparison therefore checks endpoint and
+request behavior, not TLS-fingerprint parity.
 
 ## API
 
@@ -266,7 +277,7 @@ WantedBy=multi-user.target
 | `KEYS_FILE` | `./api-keys.json` | API keys file |
 | `PROXY_API_KEY` | – | Force a single fixed key (handy in Docker) |
 | `PUBLIC_MODELS` | `0` | `1` = `/v1/models` needs no key |
-| `ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | Global upstream base; retained until both Zen paths are live-compared |
+| `ZEN_BASE_URL` | `https://opencode.ai/inference/openai/v1` | Global upstream base selected from the v2 model catalog; live acceptance is not yet confirmed |
 | `ZEN_MODEL_BASE_URLS` | `0` | `1` = use each model's models.dev `baseUrl` when available (e.g. `inference/openai/v1`) |
 | `ZEN_API_KEY` | `public` | Zen key — leave as `public` for the free tier, or drop in a real Zen key |
 | `ZEN_TIMEOUT_MS` | `120000` | Upstream timeout → `504` |
@@ -308,7 +319,7 @@ zero**, not "the id happens to end in `-free`".
 | Source | Decides |
 |--------|---------|
 | `https://models.dev/api.json` → provider `opencode` | which models are **free**, plus capability metadata (context window, tool call, attachments, modalities, `deprecated`) |
-| `https://opencode.ai/zen/v1/models` | which of those ids Zen **actually serves** right now |
+| `https://opencode.ai/inference/openai/v1/models` | which of those ids Zen **actually serves** right now |
 | probe at startup (see below) | which of them answer **for you**, from **your** network |
 
 `REFRESH_SOURCE` picks the runtime mix: `zen` (default), `models-dev`, or
@@ -427,7 +438,7 @@ Your tool (Cursor, Claude Code, curl …)
   opencode-free-proxy      ← translates Anthropic ⇄ OpenAI, maps errors
         │
         ▼  HTTPS
-  opencode.ai/zen/v1/      ← free tier (Authorization: Bearer public)
+  opencode.ai/inference/openai/v1/  ← selected v2 catalog base (Bearer public)
 ```
 
 The captured v2.2.0 request includes these headers (fork/parent headers are

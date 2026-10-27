@@ -47,7 +47,7 @@ const hasFlag = (name) => args.includes(`--${name}`);
 const OC_VERSION = process.env.OC_VERSION || DEFAULT_OC_VERSION;
 const OC_CHANNEL = process.env.OC_CHANNEL || DEFAULT_OC_CHANNEL;
 const USER_AGENT = process.env.OC_USER_AGENT || opencodeUserAgent(OC_VERSION, OC_CHANNEL);
-const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1").replace(/\/+$/, "");
+const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/inference/openai/v1").replace(/\/+$/, "");
 const USE_MODEL_BASE_URLS = process.env.ZEN_MODEL_BASE_URLS === "1";
 const modelBase = (model) =>
   USE_MODEL_BASE_URLS && model.baseUrl ? model.baseUrl.replace(/\/+$/, "") : ZEN_BASE;

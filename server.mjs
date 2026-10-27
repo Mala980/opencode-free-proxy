@@ -38,11 +38,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const PROXY_VERSION = "1.1.0";
 
 // Latest upstream OpenCode v2 release captured from @opencode/cli-linux-x64.
-// Keep this aligned with models.json and the v2 CLI contract fixture. Retain
-// the existing endpoint until both Zen paths have been compared live.
+// The default follows the v2 OpenCode model catalog's published OpenAI base.
+// Live Zen acceptance is still environment-dependent and must not be inferred
+// from the captured CLI fixture or mock-backed tests.
 const OC_VERSION_DEFAULT = DEFAULT_OC_VERSION;
 const OC_CHANNEL_DEFAULT = DEFAULT_OC_CHANNEL;
-const ZEN_BASE_DEFAULT = "https://opencode.ai/zen/v1";
+const ZEN_BASE_DEFAULT = "https://opencode.ai/inference/openai/v1";
 
 // ── Config ─────────────────────────────────────────────────────────
 function num(value, fallback) {
@@ -1304,7 +1305,8 @@ export function createServer(overrides = {}) {
           userAgent: cfg.userAgent,
           zen: cfg.zenBase,
           requestProfile: {
-            transport: "http-sse",
+            transport: "Node fetch / HTTP/1.1 / SSE",
+            tlsImpersonation: false,
             maxTokensField: cfg.maxTokensField,
             modelBaseUrls: cfg.useModelBaseUrls,
           },
