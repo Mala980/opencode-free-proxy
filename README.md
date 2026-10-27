@@ -4,8 +4,9 @@ Free models from [OpenCode Zen](https://opencode.ai/docs/zen/) served as standar
 **OpenAI**, **Responses** and **Anthropic** APIs — so Cursor, Continue, Cline,
 Claude Code, aider, the opencode CLI or plain `curl` can all use them.
 
-Catalog last synced: **2026-10-26** · opencode **1.19.4** (the dev branch is 2.1.4, both
-work — see [Version](#impersonated-client-version)).
+Catalog last refreshed: **2026-10-28** · OpenCode CLI fingerprint: **v2.2.0**.
+The captured request shape is tested against the official Linux CLI, but that
+capture does not prove Zen accepts it; see [Live path comparison](#live-path-comparison).
 
 ## 30-second setup
 
@@ -26,35 +27,34 @@ npm run doctor          # verify the free models actually answer from your machi
 
 | Model | Endpoint | Context | Tools | Notes |
 |-------|----------|--------:|:-----:|-------|
-| `big-pickle` | chat | 200K | ✓ | Stealth model, free for a limited time |
-| `mimo-v2.6-flash-free` | chat | 200K | ✓ | Multimodal |
-| `nemotron-3.5-lightning-free` | chat | 262K | ✓ | NVIDIA trial endpoint |
-| `beam-free` | chat | — | ✓ | New free model on models.dev — unverified on Zen |
-| `deepseek-v4.1-flash-free` | chat | 200K | ✓ | New free model on models.dev — unverified on Zen |
-| `flint-40b-free` | chat | — | — | New free model on models.dev — unverified on Zen |
-| `glm-5.3-flash-free` | chat | 200K | ✓ | New free model on models.dev — unverified on Zen |
-| `nemotron-3.5-super-vl-free` | chat | — | — | New free model on models.dev — unverified on Zen |
+| `big-pickle` | chat | 200K | ✓ | Prior live result exists; recheck against v2.2.0 pending |
+| `mimo-v2.6-flash-free` | chat | 200K | ✓ | Prior live result exists; recheck against v2.2.0 pending |
+| `nemotron-3.5-lightning-free` | chat | 262K | ✓ | Prior live result exists; recheck against v2.2.0 pending |
+| `beam-free` | chat | — | ✓ | models.dev metadata; v2.2.0 live recheck pending |
+| `deepseek-v4.1-flash-free` | chat | 200K | ✓ | models.dev metadata; v2.2.0 live recheck pending |
+| `flint-40b-free` | chat | — | — | models.dev metadata; v2.2.0 live recheck pending |
+| `glm-5.3-flash-free` | chat | 200K | ✓ | models.dev metadata; v2.2.0 live recheck pending |
+| `nemotron-3.5-super-vl-free` | chat | — | — | models.dev metadata; v2.2.0 live recheck pending |
 
 All of them stream, take system messages and (mostly) support tool calls.
 
-The list above is what the catalog ships; the server additionally **tests every
-model against Zen at startup** and hides the ones that turn out to be
-unusable (deprecated ids that answer `400 Model is unavailable`, geoblocked
-ids that answer `RegionError`, paid-only ids). `GET /health` shows what was
-hidden and why, so `GET /v1/models` only ever lists models that really
-answered a real request.
+The catalog currently retains eight IDs based on the last live doctor results
+from **2026-10-26**, which used the previous OpenCode 1.19.4 request profile.
+That is historical evidence, not a v2.2.0 Zen acceptance result. At startup the
+server probes models with the v2.2.0 profile and hides definitive refusals
+(unavailable, region-blocked, or access-denied). Rate limits and transient
+network errors do not disable models. `GET /health` shows each verification
+status; run `npm run doctor` on your own network to refresh the live result.
 
-Two kinds of ids are deliberately **not** proxied: `jev-1.13-free` (a
-typed-question API on `/zen/v1/systemone`, not chat — it is switched off in the
-catalog even though models.dev prices it at zero) and anything that is not
-free — the proxy only ever exposes models that cost $0 on models.dev.
+`jev-1.13-free` is deliberately **not** proxied: it uses OpenCode's separate
+SystemOne typed-question endpoint (`https://opencode.ai/inference/systemone/v1`),
+not the chat route, and remains disabled in the catalog. Paid models are also
+excluded; the proxy only exposes models published at zero cost by models.dev.
 
-models.dev marks most of the free catalogue `deprecated` (37 of 47 right now):
-upstream is saying "legacy, superseded", not "gone". In practice every single
-one of them was refused by Zen on the last live check, so they are switched off
-in `models.json` (see below) and `HIDE_DEPRECATED=1` skips them outright without
-probing. The five `beam-free`/`flint-40b-free`/… rows are new since the last
-sync and still `unverified` — `npm run doctor` settles them.
+models.dev marks 37 of its 47 free entries as `deprecated` (legacy/superseded).
+The previous live doctor run switched off 10 models; `HIDE_DEPRECATED=1` can
+skip deprecated candidates before probing, but is opt-in so live verification
+remains authoritative.
 
 ### Removed since older versions of this proxy
 
@@ -74,35 +74,52 @@ switched-off id) return a 404 that tells you what to use instead, e.g.
 { "error": { "message": "space-bunny-free is no longer available. Zen refused it on 2026-10-26 (doctor: NOT USABLE). Re-check with `npm run doctor`, or flip `supported` back to true in models.json.", "code": "model_retired" } }
 ```
 
-## Free-tier gates (read this if you get a 403)
+## Free-tier gates and v2 request profile
 
-Since 2026-09-16 OpenCode Zen only answers free-tier requests that look like
-they come from the OpenCode CLI. Anything else gets:
+Zen's free tier has historically required requests to resemble OpenCode CLI
+traffic. The current profile is compared against a request captured from the
+official **OpenCode v2.2.0** Linux CLI (`@opencode/cli-linux-x64`):
 
-```json
-{"type":"error","error":{"type":"FreeTierError","message":"Error from provider (Console): OpenCode's free tier can only be used from within OpenCode"}}
+| Detail | v2.2.0 CLI capture | This proxy |
+|--------|--------------------|------------|
+| Transport | HTTP `POST /chat/completions`, streamed SSE | HTTP `fetch` + SSE; non-streaming clients are reassembled |
+| `User-Agent` | `opencode/latest/2.2.0/cli` | Same by default; `OC_VERSION` / `OC_CHANNEL` can override it |
+| Session/cache affinity | `x-opencode-session`, `x-opencode-session-id`, `x-session-affinity`, `X-Session-Id`; fork requests may include parent-session headers | Canonical v2 `ses_…` IDs; preserves valid incoming v2 session, affinity, project, client and parent headers |
+| Streaming | `stream: true`, `stream_options.include_usage: true` | Same defaults; explicit usage preference is preserved |
+| Token limit | `max_completion_tokens` | Converts client `max_tokens` to `max_completion_tokens` by default |
+| Builtin tools | `edit`, `glob`, `grep`, `question`, `read`, `shell`, `skill`, `subagent`, `webfetch`, `websearch`, `write`, `execute` | Injects the captured set if absent; caller tools are preserved |
+
+The proxy removes calls to tools it injected from chat, Responses, and Anthropic
+outputs because it cannot execute OpenCode's local tools. Set
+`ZEN_STRIP_INJECTED_TOOLS=0` only if the caller can handle those tool calls.
+
+`test/fingerprint.test.mjs` checks the captured v2.2.0 request contract. **A
+fixture or mock-backed test is not a live Zen acceptance test.** The proxy's
+model verification and `npm run doctor` use the v2 profile, but results depend
+on real access, model quotas and region. A rate limit is not treated as model
+unavailability.
+
+## Live path comparison
+
+models.dev currently publishes `https://opencode.ai/inference/openai/v1` for
+OpenCode models, while this proxy's configured default remains
+`https://opencode.ai/zen/v1`. Their live behavior has not been established by
+the v2 CLI capture. The default is intentionally unchanged until both routes
+are tested with the same v2 request profile.
+
+From a network that can reach `opencode.ai`, run:
+
+```bash
+npm run compare:zen -- --model big-pickle
 ```
 
-The gates (reverse engineered live by the community —
-[9router#4101](https://github.com/decolua/9router/issues/4101),
-[9router#4132](https://github.com/decolua/9router/pulls/4132),
-[pi-free#544](https://github.com/apmantza/pi-free/issues/544)):
-
-| # | Zen requires | This proxy sends |
-|---|--------------|-----------------|
-| 1 | `User-Agent` leading `opencode/<version>`, version ≥ 1.17.0 | `opencode/1.19.4 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4` (verified byte-for-byte against the real 1.19.4 CLI) |
-| 2 | `x-opencode-session` matching `^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$` | canonical ids from `lib/zen.mjs` (same scheme as OpenCode's ULID) |
-| 3 | `stream: true` | always streamed upstream; non-streaming client requests are re-assembled into one response |
-| 4 | `tools[]` containing the builtin names | `bash`, `edit`, `glob`, `grep`, `read` injected when the caller didn't declare them |
-
-Consequences worth knowing:
-
-- Tool calls for the **injected** names are dropped from non-streaming
-  responses (`ZEN_STRIP_INJECTED_TOOLS=0` keeps them) — your client has no way
-  to run them anyway.
-- If Zen retunes the gate again, the fix is usually one line: set
-  `ZEN_TOOL_SET=bash,edit,glob,grep,read,write` (or whatever the new set is)
-  or bump `OC_VERSION`. Run `npm run doctor` to confirm.
+The command checks `GET /models` and probes the same model against both paths.
+`OK` means a completion was returned; `RATE LIMITED` means the request did not
+verify generation and does **not** disable the model; `FREE-TIER GATE`,
+`UNREACHABLE`, and other errors are reported separately. For ordinary catalog
+verification use `npm run doctor`. To opt into per-model `baseUrl` metadata
+from models.dev, set `ZEN_MODEL_BASE_URLS=1`; this is separate from changing
+the global default.
 
 ## API
 
@@ -249,12 +266,15 @@ WantedBy=multi-user.target
 | `KEYS_FILE` | `./api-keys.json` | API keys file |
 | `PROXY_API_KEY` | – | Force a single fixed key (handy in Docker) |
 | `PUBLIC_MODELS` | `0` | `1` = `/v1/models` needs no key |
-| `ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | Upstream base. models.dev now publishes `https://opencode.ai/inference/openai/v1` for the same models — nothing is hardcoded, so switching is one env var (also useful for testing against a mock) |
+| `ZEN_BASE_URL` | `https://opencode.ai/zen/v1` | Global upstream base; retained until both Zen paths are live-compared |
+| `ZEN_MODEL_BASE_URLS` | `0` | `1` = use each model's models.dev `baseUrl` when available (e.g. `inference/openai/v1`) |
 | `ZEN_API_KEY` | `public` | Zen key — leave as `public` for the free tier, or drop in a real Zen key |
 | `ZEN_TIMEOUT_MS` | `120000` | Upstream timeout → `504` |
 | `MAX_BODY_BYTES` | `12582912` | Request body limit (12 MB) |
-| `OC_VERSION` | `1.19.4` | opencode version to impersonate |
-| `OC_USER_AGENT` | `opencode/<ver> ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4` | Full UA override |
+| `OC_VERSION` | `2.2.0` | OpenCode version in the captured client profile |
+| `OC_CHANNEL` | `latest` | Channel segment in the v2 User-Agent |
+| `OC_USER_AGENT` | `opencode/latest/2.2.0/cli` | Full UA override |
+| `ZEN_MAX_TOKENS_FIELD` | `max_completion_tokens` | Chat token-limit field; set to `max_tokens` only for a compatible route |
 | `OC_CLIENT` / `OC_PROJECT` | `cli` / `global` | `x-opencode-client` / `x-opencode-project` values |
 | `REFRESH_MODELS` | `1` | `0` = never call Zen's model list |
 | `REFRESH_SOURCE` | `zen` | Where the free list comes from: `zen` (live `/models`), `models-dev` (the catalogue opencode ships) or `both` |
@@ -268,7 +288,7 @@ WantedBy=multi-user.target
 | `FALLBACK_MAX` | `2` | How many other models to try before giving up |
 | `ZEN_FORCE_STREAM` | `1` | Always call Zen with `stream:true` (gate #3). `0` = pass the caller's preference through |
 | `ZEN_TOOLS` | `1` | Inject the builtin tool names (gate #4). `0` = send the caller's tools only |
-| `ZEN_TOOL_SET` | `bash,edit,glob,grep,read` | Which tool names to inject |
+| `ZEN_TOOL_SET` | `edit,glob,grep,question,read,shell,skill,subagent,webfetch,websearch,write,execute` | Captured v2.2.0 builtin names to inject |
 | `ZEN_STRIP_INJECTED_TOOLS` | `1` | Hide tool calls for injected tools from callers that declared none |
 | `VERIFY_MODELS` | `1` | Probe every model against Zen before advertising it |
 | `VERIFY_INTERVAL_MS` | `1800000` | Re-probe cadence (30 min) |
@@ -410,29 +430,30 @@ Your tool (Cursor, Claude Code, curl …)
   opencode.ai/zen/v1/      ← free tier (Authorization: Bearer public)
 ```
 
-Zen requires the client headers the opencode CLI sends. Without them, even
-`Bearer public` is rejected with `AuthError`:
+The captured v2.2.0 request includes these headers (fork/parent headers are
+conditional):
 
 ```
 Authorization: Bearer public
-User-Agent: opencode/1.19.4 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4
+User-Agent: opencode/latest/2.2.0/cli
 x-opencode-client: cli
 x-opencode-project: global
-x-opencode-session: ses_<id>
-x-opencode-session-id: ses_<id>
-x-opencode-request: msg_<id>
+x-opencode-session: ses_<affinity id>
+x-opencode-session-id: ses_<current session id>
+x-session-affinity: ses_<affinity id>
+X-Session-Id: ses_<affinity id>
 ```
 
 ### Impersonated client version
 
-`OC_VERSION` defaults to **1.19.4**, the newest stable opencode 1.x — the line
-that still ships the Zen free-tier flow this proxy mimics (`apiKey: "public"`
-when no Zen key is configured). Upstream's `dev` branch is already **2.1.4** and
-keeps the same free-tier path; the proxy sends both header families, so
-switching is a one-liner:
+`OC_VERSION` and `OC_CHANNEL` default to **2.2.0** and **latest**, matching the
+latest OpenCode v2 release used for the captured fixture. This is a client
+fingerprint choice, not a claim that Zen has accepted it live. To compare the
+v2 profile against both published Zen paths, use `npm run compare:zen`; to
+change the User-Agent explicitly:
 
 ```bash
-OC_VERSION=2.1.4 OC_RUNTIME=bun/1.4.4 node server.mjs
+OC_VERSION=2.2.0 OC_CHANNEL=latest node server.mjs
 ```
 
 The User-Agent we send is not a guess: `npm run capture:fixture` points the real
@@ -446,8 +467,9 @@ npm run capture:fixture -- --bin $(command -v opencode)
 ## Development
 
 ```bash
-npm test              # 62 tests, no network, ~4s
-npm run lint          # oxlint (the same linter anomalyco/opencode uses)
+npm test              # unit + mock integration tests; no live network
+npm run lint          # oxlint
+npm run compare:zen   # live comparison of both Zen paths (requires access)
 npm run dev           # node --watch server.mjs
 npm run capture:fixture -- --bin $(command -v opencode)   # re-record the CLI's request
 ```
@@ -457,20 +479,20 @@ Two kinds of tests:
 - `test/proxy.test.mjs` — end-to-end against a **mock Zen**: all three API
   formats, streaming, error mapping, fallback, and the runtime verification
   (which models get hidden and why).
-- `test/fingerprint.test.mjs` — a **contract test** against the official
-  client. `test/fixtures/opencode-cli-<version>.json` holds a request recorded
-  from the real opencode CLI (captured by pointing it at a local server), and
-  the test asserts our User-Agent, `x-opencode-*` headers, id shapes and
-  injected tool names still match it. If Zen's gates change, this fails here
-  instead of in production.
+- `test/fingerprint.test.mjs` — a **request-shape contract test** against the
+  official CLI. Versioned fixtures preserve v1.19.4 for historical comparison
+  and v2.2.0 as the active target; tests assert the User-Agent, v2 session
+  headers, token/stream defaults, and captured tools. This does not test Zen's
+  live gate; use `npm run compare:zen` for that.
 - `test/models-dev.test.mjs` — the models.dev reader against real provider
   files copied from `anomalyco/models.dev`.
 
-CI (`.github/workflows/`) mirrors upstream's split: `check.yml` lints on every
-push and PR, `check-test.yml` runs the suite on Node 18/20/22, and
-`models-snapshot.yml` re-checks the catalog against models.dev + Zen daily and
-opens an issue when it drifts. See `AGENTS.md` for the branch/commit
-conventions used in this repo.
+CI (`.github/workflows/`) keeps upstream v2's separate lint and test jobs but
+adapts their contents: this Node-only service runs on Node 18/20/22/24, plus
+Node 24 on Windows; it has no Bun/Turbo monorepo, TypeScript build, or browser
+suite. `models-snapshot.yml` independently re-checks models.dev + Zen daily and
+opens an issue when the catalog drifts. See `AGENTS.md` for repository
+conventions.
 
 ## Free-tier limits
 
@@ -483,7 +505,7 @@ transparently retry on the next free model instead.
 
 | Symptom | What to do |
 |---------|-----------|
-| `FreeTierError: ... can only be used from within OpenCode` | `npm run doctor`. If it says `FREE-TIER GATE`, Zen retuned a gate — check the table above and try `ZEN_TOOL_SET` / `OC_VERSION` |
+| `FreeTierError: ... can only be used from within OpenCode` | Run `npm run compare:zen -- --model big-pickle`; if both routes report `FREE-TIER GATE`, compare the capture contract and try `ZEN_TOOL_SET`, `OC_VERSION` or `OC_CHANNEL` |
 | `RATE LIMITED` on every model | The anonymous quota is per egress IP and shared; wait, set `FALLBACK=1` so the proxy hops to the next free model, or set `ZEN_API_KEY` to a real Zen key |
 | `REGION BLOCKED` on `muse-spark-*-free` / `fledge-alpha-free` | Geoblocked at the Zen layer, nothing the proxy can do — pick another model |
 | `NOT USABLE` / `NOT ON ZEN` | The model rotated out or is geoblocked. It is auto-hidden from `/v1/models`; `npm run update:models` refreshes the catalog |
@@ -491,8 +513,8 @@ transparently retry on the next free model instead.
 | A model vanished after enabling `REFRESH_SOURCE=both` | models.dev now prices it above zero (or does not publish it). Check `/health` → `modelsDev.free` |
 | The log stops after `[MODELS] Refreshed from Zen: …` | Not stuck — the probe round is running in the background (up to `VERIFY_STARTUP_TIMEOUT_MS`). The port is already open; watch `GET /health` → `verification.running`, or skip it with `VERIFY_MODELS=0` |
 | Startup waits a minute before printing `models` | Zen is slow to answer probes. Lower `VERIFY_TIMEOUT_MS` / `VERIFY_STARTUP_TIMEOUT_MS`, or raise `VERIFY_CONCURRENCY` |
-| Every model returns 404/401, or `update:models` prints `! models.dev publishes …` | The upstream base may have moved. `npm run doctor` against the other path: `ZEN_BASE_URL=https://opencode.ai/inference/openai/v1 npm run doctor` |
-| `UNREACHABLE` | Network/DNS. Check you can `curl https://opencode.ai/zen/v1/models` |
+| Every model returns 404/401, or `update:models` reports a models.dev base mismatch | Run `npm run compare:zen -- --model big-pickle` from a network that can reach both paths; do not change the global default based only on catalog metadata |
+| `UNREACHABLE` | Network/DNS. Check both `https://opencode.ai/zen/v1/models` and `https://opencode.ai/inference/openai/v1/models` |
 
 ## Notes
 

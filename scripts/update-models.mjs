@@ -24,8 +24,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import crypto from "node:crypto";
 import { baseUrlAdvice, fetchFreeModels } from "../lib/models-dev.mjs";
+import {
+  DEFAULT_OC_CHANNEL,
+  DEFAULT_OC_VERSION,
+  generateSessionId,
+  opencodeUserAgent,
+  zenHeaders,
+} from "../lib/zen.mjs";
 
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const MODELS_FILE = process.env.MODELS_FILE || path.join(HERE, "models.json");
@@ -36,12 +42,11 @@ const CHECK = args.includes("--check");
 const NO_MODELS_DEV = args.includes("--no-models-dev");
 
 const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1").replace(/\/+$/, "");
-const OC_VERSION = process.env.OC_VERSION || "1.19.4";
+const OC_VERSION = process.env.OC_VERSION || DEFAULT_OC_VERSION;
+const OC_CHANNEL = process.env.OC_CHANNEL || DEFAULT_OC_CHANNEL;
 const MODELS_DEV_URL = process.env.MODELS_DEV_API_URL || "https://models.dev/api.json";
 const MODELS_DEV_PROVIDER = process.env.MODELS_DEV_PROVIDER || "opencode";
-const USER_AGENT =
-  process.env.OC_USER_AGENT ||
-  `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/${process.env.OC_RUNTIME || "bun/1.4.4"}`;
+const USER_AGENT = process.env.OC_USER_AGENT || opencodeUserAgent(OC_VERSION, OC_CHANNEL);
 
 const FREE_SUFFIX = /-free$/;
 const EXTRA_FREE = new Set(["big-pickle", "grok-code"]);
@@ -61,13 +66,16 @@ async function fetchLive() {
   try {
     const res = await fetch(`${ZEN_BASE}/models`, {
       headers: {
+        ...zenHeaders(
+          {
+            userAgent: USER_AGENT,
+            zenKey: process.env.ZEN_API_KEY || "public",
+            client: process.env.OC_CLIENT || "cli",
+            project: process.env.OC_PROJECT || "global",
+          },
+          generateSessionId(),
+        ),
         Accept: "application/json",
-        Authorization: `Bearer ${process.env.ZEN_API_KEY || "public"}`,
-        "User-Agent": USER_AGENT,
-        "x-opencode-client": "cli",
-        "x-opencode-project": process.env.OC_PROJECT || "global",
-        "x-opencode-session": `ses_${crypto.randomBytes(16).toString("hex")}`,
-        "x-opencode-request": `msg_${crypto.randomBytes(16).toString("hex")}`,
       },
       signal: ctl.signal,
     });
@@ -104,6 +112,9 @@ function applyModelsDev(model, upstream) {
   for (const key of ["context", "input", "output"]) {
     if (Number.isFinite(upstream[key])) sync(key, upstream[key]);
   }
+  // A model's OpenCode API surface may be curated (for example, SystemOne).
+  // Refresh the transport base URL from models.dev without rewriting that route.
+  if (typeof upstream.baseUrl === "string") sync("baseUrl", upstream.baseUrl);
   for (const key of ["reasoning", "tool_call", "attachment", "structured_output", "temperature"]) {
     if (typeof upstream[key] === "boolean") sync(key, upstream[key]);
   }
@@ -261,7 +272,14 @@ async function main() {
     known.add(id);
   }
 
-  const next = { ...catalog, updated: today, opencodeVersion: OC_VERSION, models: kept, retired };
+  const next = {
+    ...catalog,
+    updated: today,
+    opencodeVersion: OC_VERSION,
+    opencodeLatest: DEFAULT_OC_VERSION,
+    models: kept,
+    retired,
+  };
 
   console.log(
     `Kept ${kept.length - added.length} bundled models, added ${added.length} new, dropped ${removed.length}, priced out ${priced.length}.`,

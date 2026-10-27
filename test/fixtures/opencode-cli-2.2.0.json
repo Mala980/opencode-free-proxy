@@ -1,0 +1,90 @@
+{
+  "$comment": "Captured from the real OpenCode CLI by pointing it at a local server (scripts/capture-cli-fixture.mjs). Contract test: what this proxy sends must stay equivalent to what the official client sends.",
+  "capturedAt": "2026-10-27",
+  "cli": {
+    "package": "@opencode/cli-linux-x64",
+    "version": "2.2.0",
+    "rawVersion": "opencode v2.2.0",
+    "channel": "latest",
+    "userAgent": "opencode/latest/2.2.0/cli"
+  },
+  "requests": [
+    {
+      "endpoint": "chat/completions",
+      "headers": {
+        "authorization": "Bearer public",
+        "content-type": "application/json",
+        "user-agent": "opencode/latest/2.2.0/cli",
+        "x-opencode-client": "cli",
+        "x-opencode-project": "cc37624692548451e20b4ea59e3baa365e86eb53",
+        "x-opencode-session": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "x-opencode-session-id": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "x-session-affinity": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "x-session-id": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "big-pickle",
+        "stream": true,
+        "streamOptions": {
+          "include_usage": true
+        },
+        "maxTokensField": null,
+        "keys": [
+          "messages",
+          "model",
+          "stream",
+          "stream_options"
+        ],
+        "toolNames": []
+      }
+    },
+    {
+      "endpoint": "chat/completions",
+      "headers": {
+        "authorization": "Bearer public",
+        "content-type": "application/json",
+        "user-agent": "opencode/latest/2.2.0/cli",
+        "x-opencode-client": "cli",
+        "x-opencode-project": "cc37624692548451e20b4ea59e3baa365e86eb53",
+        "x-opencode-session": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "x-opencode-session-id": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "x-session-affinity": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "x-session-id": "ses_e81c561f9ffeg84PMiV05GxcXa",
+        "accept": "*/*",
+        "accept-encoding": "gzip, deflate, br, zstd"
+      },
+      "body": {
+        "model": "big-pickle",
+        "stream": true,
+        "streamOptions": {
+          "include_usage": true
+        },
+        "maxTokensField": "max_completion_tokens",
+        "keys": [
+          "max_completion_tokens",
+          "messages",
+          "model",
+          "stream",
+          "stream_options",
+          "tools"
+        ],
+        "toolNames": [
+          "edit",
+          "glob",
+          "grep",
+          "question",
+          "read",
+          "shell",
+          "skill",
+          "subagent",
+          "webfetch",
+          "websearch",
+          "write",
+          "execute"
+        ]
+      }
+    }
+  ]
+}

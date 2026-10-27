@@ -1,8 +1,8 @@
 name: check
 
-# Upstream splits its verification in two: `check` (lint + typecheck) and
-# `check-test` (the suites). This is our `check` — oxlint is the same linter
-# anomalyco/opencode uses.
+# Keep upstream v2's lint/test split, adapted for this dependency-free Node
+# service. OpenCode runs Bun + TypeScript typechecking; this plain-JS repo uses
+# oxlint and has no TypeScript build step.
 
 on:
   push:

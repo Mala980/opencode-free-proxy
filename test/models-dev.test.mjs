@@ -303,10 +303,11 @@ describe("base URL drift", () => {
     assert.equal(baseUrlAdvice(["https://opencode.ai/zen/v1/"], "https://opencode.ai/zen/v1"), null, "trailing slash is ignored");
   });
 
-  test("says which base URL to use when upstream moved", () => {
+  test("reports base URL drift without recommending an unverified switch", () => {
     const advice = baseUrlAdvice(["https://opencode.ai/inference/openai/v1"], "https://opencode.ai/zen/v1");
     assert.match(advice, /inference\/openai\/v1/);
-    assert.match(advice, /ZEN_BASE_URL=https:\/\/opencode\.ai\/inference\/openai\/v1/);
+    assert.match(advice, /npm run compare:zen/);
+    assert.doesNotMatch(advice, /Try ZEN_BASE_URL=/);
   });
 
   test("no published URL means nothing to compare against", () => {

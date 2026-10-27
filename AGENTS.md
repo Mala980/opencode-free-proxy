@@ -36,9 +36,10 @@ Mirrors upstream's style guide where it applies to plain JS:
 ## Tests
 
 ```bash
-npm test                 # node --test, 62 tests, no network
+npm test                 # node --test, mock-backed/no live network
 npm run lint             # oxlint
-npm run doctor           # live check against Zen (needs network)
+npm run doctor           # live model check against Zen (needs network)
+npm run compare:zen      # compare both published Zen paths (needs network)
 ```
 
 Upstream's rule is "avoid mocks, test the real implementation" — we break it
@@ -54,9 +55,11 @@ Layout:
 | `test/fingerprint.test.mjs` | **contract**: what we send must equal what the real CLI sends (from `test/fixtures/opencode-cli-*.json`) |
 | `test/models-dev.test.mjs` | **contract**: the models.dev reader against real provider files (from `test/fixtures/models-dev-toml/`) |
 
-CI mirrors upstream's split: `check.yml` (lint) and `check-test.yml` (the suite
-on Node 18/20/22) — upstream calls them `check` and `check-test`, where `check`
-also typechecks with `typecheck:tsc` (there are no types here to check).
+CI keeps the upstream v2 lint/test split but adapts it to this Node-only repo:
+`check.yml` runs oxlint; `check-test.yml` tests supported Node 18/20/22/24 and
+adds Node 24 on Windows. Upstream v2 uses Bun, TypeScript, Turbo and a much
+larger Linux/Windows build/e2e matrix; this proxy has no corresponding packages
+or browser suite.
 
 Two rules for tests:
 
@@ -97,20 +100,32 @@ the cost table for numeric leaves and accepts either schema — both shapes have
 fixtures (`test/fixtures/models-dev-toml-v1`, `-v2`) and tests, so a third
 migration shows up as a test failure instead of an empty free list.
 
-## What the proxy must keep doing
+## Current v2.2.0 request profile and endpoint policy
 
-Zen only answers free-tier requests that look like the official agentic
-client (see README → Free-tier gates). Four things, all in `lib/zen.mjs`:
+`lib/zen.mjs` is aligned to the official OpenCode v2.2.0 Linux CLI capture at
+`test/fixtures/opencode-cli-2.2.0.json`. Keep `models.json`, the User-Agent,
+and that fixture on the same target. The captured ordinary chat path is HTTP
+OpenAI Chat Completions with SSE; don't claim support for every upstream
+transport merely because the v2 CLI has transport abstractions.
 
-1. `User-Agent: opencode/<version> …` with version ≥ 1.17.0
-2. `x-opencode-session` = `ses_<12 hex><14 alnum>`
-3. `stream: true` upstream (non-streaming callers get a re-assembled response)
-4. `tools[]` containing the builtin names `bash, edit, glob, grep, read`
+The captured contract includes:
 
-`test/fingerprint.test.mjs` enforces 1, 2 and 4 against the captured CLI
-request; `test/proxy.test.mjs` enforces 3.
+1. `User-Agent: opencode/latest/2.2.0/cli`.
+2. Canonical `ses_` session IDs plus affinity headers; preserve valid client
+   session/affinity/project/client and conditional parent-session headers.
+3. `stream: true`, `stream_options.include_usage: true`, and
+   `max_completion_tokens` for chat requests.
+4. The v2.2.0 builtin names `edit, glob, grep, question, read, shell, skill,
+   subagent, webfetch, websearch, write, execute`.
 
-Current impersonation (from the capture, not a guess):
-`opencode/1.19.4 ai-sdk/provider-utils/4.0.23 runtime/bun/1.4.4`. Upstream's
-`dev` branch is 2.1.4; the free-tier path is unchanged, so `OC_VERSION` is all
-that has to move.
+The capture/fingerprint tests verify request shape only. Mock-backed tests do
+not prove Zen accepts the profile. Run `npm run compare:zen -- --model
+big-pickle` and `npm run doctor` from a network that can reach Zen; rate limits
+must never mark a model unavailable.
+
+Do not switch the global Zen base URL based only on models.dev metadata. The
+catalog's per-model `baseUrl` values may be used with explicit
+`ZEN_MODEL_BASE_URLS=1`, but the default remains `https://opencode.ai/zen/v1`
+until `https://opencode.ai/zen/v1` and
+`https://opencode.ai/inference/openai/v1` have been compared live using the v2
+profile.

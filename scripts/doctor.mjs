@@ -5,6 +5,7 @@
  *   npm run doctor
  *   npm run doctor -- --server http://127.0.0.1:6446 --key oc-xxxx
  *   npm run doctor -- --model big-pickle --verbose
+ *   npm run doctor -- --compare-paths --model big-pickle
  *   npm run doctor -- --apply     # write NOT USABLE verdicts back to models.json
  *
  * --apply switches off the models Zen refuses (`supported: false` plus an
@@ -15,17 +16,23 @@
  * or by flipping `supported` back to true.
  *
  * Without --server it talks to Zen directly, using exactly the same
- * fingerprint the proxy uses (canonical ses_ id, opencode User-Agent,
- * stream:true, bash/glob/grep/read tool quartet). That tells you whether the
- * free tier is reachable from your machine and whether the fingerprint is
- * still accepted. With --server it goes through your running proxy instead.
+ * fingerprint the proxy uses (v2.2.0 User-Agent, canonical session/affinity
+ * IDs, streamed chat, v2 token field and captured builtin tools). That tells
+ * you whether the free tier is reachable from your machine and whether the
+ * fingerprint is still accepted. With --server it goes through your proxy.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyProbe, probeModel } from "../lib/probe.mjs";
-import { generateSessionId, zenHeaders } from "../lib/zen.mjs";
+import {
+  DEFAULT_OC_CHANNEL,
+  DEFAULT_OC_VERSION,
+  generateSessionId,
+  opencodeUserAgent,
+  zenHeaders,
+} from "../lib/zen.mjs";
 
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const MODELS_FILE = process.env.MODELS_FILE || path.join(HERE, "models.json");
@@ -37,16 +44,20 @@ const getArg = (name, fallback) => {
 };
 const hasFlag = (name) => args.includes(`--${name}`);
 
-const OC_VERSION = process.env.OC_VERSION || "1.19.4";
-const USER_AGENT =
-  process.env.OC_USER_AGENT ||
-  `opencode/${OC_VERSION} ai-sdk/provider-utils/4.0.23 runtime/${process.env.OC_RUNTIME || "bun/1.4.4"}`;
+const OC_VERSION = process.env.OC_VERSION || DEFAULT_OC_VERSION;
+const OC_CHANNEL = process.env.OC_CHANNEL || DEFAULT_OC_CHANNEL;
+const USER_AGENT = process.env.OC_USER_AGENT || opencodeUserAgent(OC_VERSION, OC_CHANNEL);
 const ZEN_BASE = (process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1").replace(/\/+$/, "");
+const USE_MODEL_BASE_URLS = process.env.ZEN_MODEL_BASE_URLS === "1";
+const modelBase = (model) =>
+  USE_MODEL_BASE_URLS && model.baseUrl ? model.baseUrl.replace(/\/+$/, "") : ZEN_BASE;
 const SERVER = getArg("server", process.env.PROXY_URL || "");
 const TIMEOUT = Number(getArg("timeout", process.env.ZEN_TIMEOUT_MS || 45000));
 const ONLY = getArg("model", "");
 const VERBOSE = hasFlag("verbose");
 const APPLY = hasFlag("apply");
+const COMPARE_PATHS = hasFlag("compare-paths");
+const ZEN_PATHS = ["https://opencode.ai/zen/v1", "https://opencode.ai/inference/openai/v1"];
 
 async function request(url, headers, body, timeoutMs) {
   const ctl = new AbortController();
@@ -81,9 +92,33 @@ const LABELS = {
   error: { ok: false, label: "ERROR", note: "transient / network" },
 };
 
-async function probeZen(model) {
+async function listZenModels(zenBase) {
+  const timeoutMs = Math.min(TIMEOUT, 15000);
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${zenBase.replace(/\/+$/, "")}/models`, {
+      headers: {
+        ...zenHeaders(
+          { userAgent: USER_AGENT, zenKey: process.env.ZEN_API_KEY || "public", client: "cli", project: "global" },
+          generateSessionId(),
+        ),
+      },
+      signal: ctl.signal,
+    });
+    const json = await res.json().catch(() => null);
+    const ids = (json?.data || []).map((model) => model?.id).filter(Boolean);
+    return { status: res.status, ids, detail: res.ok ? `${ids.length} models` : `HTTP ${res.status}` };
+  } catch (error) {
+    return { status: 0, ids: [], detail: error.name === "AbortError" ? `timeout after ${timeoutMs}ms` : error.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeZen(model, zenBase = modelBase(model)) {
   const result = await probeModel({
-    zenBase: ZEN_BASE,
+    zenBase,
     userAgent: USER_AGENT,
     zenKey: process.env.ZEN_API_KEY || "public",
     client: "cli",
@@ -100,7 +135,7 @@ async function probeProxy(model, server, key) {
   const url = `${server.replace(/\/+$/, "")}/v1/${isResponses ? "responses" : "chat/completions"}`;
   const body = isResponses
     ? { model: model.id, input: "Reply with exactly: OK", max_output_tokens: 32 }
-    : { model: model.id, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_tokens: 32 };
+    : { model: model.id, messages: [{ role: "user", content: "Reply with exactly: OK" }], max_completion_tokens: 32 };
   const res = await request(url, { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, body, TIMEOUT);
   const { status, detail } = classifyProbe(res.status, res.text);
   return { ...res, status, detail, ...(LABELS[status] || { ok: false, label: status }) };
@@ -119,36 +154,66 @@ function readKey() {
 
 async function main() {
   const catalog = JSON.parse(fs.readFileSync(MODELS_FILE, "utf8"));
-  const models = (catalog.models || []).filter((m) => m.supported !== false && (!ONLY || m.id === ONLY));
+  const allModels = catalog.models || [];
+  const models = allModels.filter((model) => model.supported !== false && (!ONLY || model.id === ONLY));
   const key = SERVER ? readKey() : "";
 
   console.log(`opencode-free-proxy doctor — catalog ${catalog.updated} (opencode ${catalog.opencodeVersion})`);
-  console.log(SERVER ? `Probing through proxy ${SERVER}\n` : `Probing Zen directly at ${ZEN_BASE}\n`);
+  console.log(
+    SERVER
+      ? `Probing through proxy ${SERVER}\n`
+      : COMPARE_PATHS
+        ? `Comparing both Zen API paths with the v2.2.0 request profile\n`
+        : `Probing Zen directly at ${ZEN_BASE}\n`,
+  );
   if (!SERVER) console.log(`User-Agent: ${USER_AGENT}\n`);
 
-  if (!SERVER) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 15000);
-    try {
-      const res = await fetch(`${ZEN_BASE}/models`, {
-        headers: { Accept: "application/json", ...zenHeaders({ userAgent: USER_AGENT }, generateSessionId()) },
-        signal: ctl.signal,
-      });
-      const ids = ((await res.json())?.data || []).map((m) => m.id);
-      console.log(`Zen model list: HTTP ${res.status}, ${ids.length} models\n`);
-    } catch (err) {
-      console.log(`Zen model list: UNREACHABLE (${err.name === "AbortError" ? "timeout" : err.message})\n`);
-    } finally {
-      clearTimeout(timer);
+  if (COMPARE_PATHS) {
+    if (SERVER || APPLY) throw new Error("--compare-paths is direct-only and cannot be combined with --apply");
+    const model = allModels.find((entry) => entry.id === ONLY) ||
+      models.find((entry) => entry.id === "big-pickle") ||
+      models.find((entry) => entry.endpoint === "chat") ||
+      models[0];
+    if (!model) throw new Error("No catalog model available for the path comparison");
+
+    console.log(`Control model: ${model.id} (${model.endpoint}) — same body/profile to both paths. Rate limits are not a refusal.\n`);
+    let answered = 0;
+    for (const zenBase of ZEN_PATHS) {
+      const list = await listZenModels(zenBase);
+      const listed = list.ids.includes(model.id) ? "listed" : list.status === 200 ? "not listed" : "unknown";
+      console.log(`${zenBase}`);
+      console.log(`  GET /models: HTTP ${list.status || "000"}, ${list.detail}; ${model.id} ${listed}`);
+      const result = await probeZen(model, zenBase);
+      const mark = result.status === "ok" ? "✓" : result.status === "rate_limited" ? "~" : "✗";
+      console.log(`  ${mark} ${model.id}: ${result.label} (HTTP ${result.httpStatus || "000"}, ${result.ms}ms) — ${result.detail}`);
+      if (result.status === "ok") answered += 1;
+      if (result.status === "rate_limited") console.log("    Quota response: model is not disabled, but generation was not verified.");
+      console.log();
     }
+    console.log(`${answered}/${ZEN_PATHS.length} paths returned a generated completion.`);
+    if (!answered) process.exit(1);
+    return;
   }
 
-  let working = 0;
+  if (!SERVER) {
+    const list = await listZenModels(ZEN_BASE);
+    console.log(`Zen model list: HTTP ${list.status || "000"}, ${list.detail}\n`);
+  }
+
+  let retained = 0;
+  let answered = 0;
+  let rateLimited = 0;
   const dead = [];
   for (const model of models) {
     const result = SERVER ? await probeProxy(model, SERVER, key) : await probeZen(model);
     const mark = result.ok ? (result.label === "OK" ? "✓" : "~") : "✗";
-    if (result.ok) working += 1;
+    if (result.status === "ok") {
+      answered += 1;
+      retained += 1;
+    } else if (result.status === "rate_limited") {
+      rateLimited += 1;
+      retained += 1;
+    }
     if (APPLY && result.status === "unavailable") dead.push({ id: model.id, detail: result.detail });
     console.log(
       `${mark} ${model.id.padEnd(34)} ${result.label.padEnd(16)} ${String(result.ms).padStart(6)}ms  ${result.note || String(result.detail).slice(0, 40)}`,
@@ -156,7 +221,10 @@ async function main() {
     if (VERBOSE && !result.ok) console.log(`    ${result.detail}`);
   }
 
-  console.log(`\n${working}/${models.length} models usable${SERVER ? " through the proxy" : " on Zen"}.`);
+  console.log(
+    `\n${answered}/${models.length} models returned content${SERVER ? " through the proxy" : " on Zen"}; ` +
+      `${rateLimited} rate-limited (retained, not counted as confirmed generations).`,
+  );
   if (SERVER && !key) {
     console.log("No proxy API key found — pass --key or set PROXY_API_KEY.");
     process.exit(1);
@@ -189,7 +257,7 @@ async function main() {
     }
   }
 
-  if (working === 0) {
+  if (retained === 0) {
     console.log(
       SERVER
         ? "Nothing works through the proxy. Check the proxy logs, then run `npm run doctor` without --server."

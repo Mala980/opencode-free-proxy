@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "../server.mjs";
+import { generateSessionId } from "../lib/zen.mjs";
 
 /**
  * End-to-end tests for the proxy against a mock Zen upstream.
@@ -31,7 +32,7 @@ function startMockUpstream() {
 
       const model = body.model;
 
-      if (url.pathname === "/v1/models") {
+      if (url.pathname.endsWith("/models")) {
         return json(res, 200, {
           object: "list",
           data: [
@@ -47,6 +48,7 @@ function startMockUpstream() {
             "ling-3.0-flash-fin-free",
             "deepseek-v4-flash-free",
             "muse-spark-1.3-contributor-free",
+            "response-inject-free",
             "brand-new-model-free",
             "ratelimited-free",
             "midstream-free",
@@ -62,7 +64,7 @@ function startMockUpstream() {
         });
       }
 
-      if (url.pathname === "/v1/responses") {
+      if (url.pathname.endsWith("/responses")) {
         const response = {
           id: "resp_1",
           object: "response",
@@ -70,6 +72,9 @@ function startMockUpstream() {
           status: "completed",
           output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "responses ok" }] }],
         };
+        if (model === "response-inject-free") {
+          response.output.push({ type: "function_call", id: "fc_1", name: "read", arguments: "{}" });
+        }
         if (body.stream) {
           res.writeHead(200, { "Content-Type": "text/event-stream" });
           res.write(`event: response.created\ndata: ${JSON.stringify({ type: "response.created", response: { ...response, status: "in_progress", output: [] } })}\n\n`);
@@ -79,7 +84,7 @@ function startMockUpstream() {
         return json(res, 200, response);
       }
 
-      if (url.pathname === "/v1/chat/completions") {
+      if (url.pathname.endsWith("/chat/completions")) {
         if (model === "gone-free") {
           return json(res, 404, { error: { message: "Model not found", type: "not_found_error" } });
         }
@@ -211,6 +216,7 @@ function startMockUpstream() {
 }
 
 let upstream;
+let upstreamPort;
 let app;
 let base;
 let keyFile;
@@ -239,7 +245,7 @@ function writeCatalog() {
     JSON.stringify(
       {
         updated: "2026-10-26",
-        opencodeVersion: "1.19.4",
+        opencodeVersion: "2.2.0",
         models: [
           model("big-pickle", "chat"),
           model("mimo-v2.6-flash-free", "chat"),
@@ -252,6 +258,7 @@ function writeCatalog() {
           model("mimo-v2.5-free", "chat", { status: "deprecated" }),
           model("deepseek-v4-flash-free", "chat", { status: "deprecated" }),
           model("muse-spark-1.3-contributor-free", "responses", { context: 1048576 }),
+          model("response-inject-free", "responses"),
           { ...model("jev-1.13-free", "chat"), supported: false },
         ],
         retired: {
@@ -270,7 +277,7 @@ const sockets = new Set();
 
 before(async () => {
   upstream = startMockUpstream();
-  const upstreamPort = await upstream.listen();
+  upstreamPort = await upstream.listen();
   keyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocp-")), "api-keys.json");
   fs.writeFileSync(keyFile, JSON.stringify(KEYS));
   modelsFile = writeCatalog();
@@ -293,7 +300,7 @@ after(async () => {
   await upstream?.close();
 });
 
-function call(pathname, { method = "GET", body, key = KEYS.tester } = {}) {
+function call(pathname, { method = "GET", body, key = KEYS.tester, headers = {} } = {}) {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
     const req = http.request(
@@ -303,6 +310,7 @@ function call(pathname, { method = "GET", body, key = KEYS.tester } = {}) {
         headers: {
           ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
           ...(key ? { Authorization: `Bearer ${key}` } : {}),
+          ...headers,
         },
       },
       (res) => {
@@ -438,14 +446,33 @@ describe("OpenAI format", () => {
     assert.match(res.text, /data: \[DONE\]/);
   });
 
-  test("temperature and max_tokens are forwarded", async () => {
+  test("models.dev per-model base URLs are used when enabled", async () => {
+    const catalog = JSON.parse(fs.readFileSync(app.cfg.modelsFile, "utf8"));
+    catalog.models.find((model) => model.id === "big-pickle").baseUrl = `http://127.0.0.1:${upstreamPort}/model-specific/v1`;
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ocp-baseurl-")), "models.json");
+    fs.writeFileSync(file, JSON.stringify(catalog));
+    const requestsBefore = upstream.requests.length;
+    await withProxy({ modelsFile: file, useModelBaseUrls: true }, async (baseUrl) => {
+      const response = await postJson(baseUrl, "/v1/chat/completions", {
+        model: "big-pickle",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      assert.equal(response.status, 200);
+    });
+    const modelRequest = upstream.requests.slice(requestsBefore).find((request) => request.path.endsWith("/chat/completions"));
+    assert.equal(modelRequest?.path, "/model-specific/v1/chat/completions");
+  });
+
+  test("temperature is forwarded and max_tokens is normalized to the v2 field", async () => {
     await call("/v1/chat/completions", {
       method: "POST",
       body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }], temperature: 0.2, max_tokens: 64 },
     });
     const last = upstream.requests[upstream.requests.length - 1];
     assert.equal(last.body.temperature, 0.2);
-    assert.equal(last.body.max_tokens, 64);
+    assert.equal(last.body.max_completion_tokens, 64);
+    assert.equal(last.body.max_tokens, undefined);
+    assert.deepEqual(last.body.stream_options, { include_usage: true });
   });
 
   test("Zen auth headers are attached", async () => {
@@ -457,8 +484,11 @@ describe("OpenAI format", () => {
     assert.equal(last.headers.authorization, "Bearer public");
     assert.equal(last.headers["x-opencode-client"], "cli");
     assert.equal(last.headers["x-opencode-project"], "global");
-    assert.match(last.headers["x-opencode-session"], /^ses_/);
-    assert.match(last.headers["x-opencode-request"], /^msg_/);
+    assert.match(last.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.equal(last.headers["x-opencode-session"], last.headers["x-opencode-session-id"]);
+    assert.equal(last.headers["x-session-affinity"], last.headers["x-session-id"]);
+    assert.equal(last.headers["accept"], "*/*");
+    assert.equal(last.headers["x-opencode-request"], undefined);
     assert.equal(last.headers["user-agent"], app.cfg.userAgent);
   });
 });
@@ -747,7 +777,7 @@ describe("error handling", () => {
       body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
     });
     const names = (upstream.requests[upstream.requests.length - 1].body.tools || []).map((t) => t.function?.name);
-    for (const required of ["bash", "edit", "glob", "grep", "read"]) {
+    for (const required of ["edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute"]) {
       assert.ok(names.includes(required), `missing injected tool ${required}`);
     }
   });
@@ -767,15 +797,41 @@ describe("error handling", () => {
     assert.equal(new Set(names).size, names.length, "no duplicate tool names");
   });
 
-  test("x-opencode-session matches the canonical Zen shape", async () => {
+  test("v2 cache-affinity headers match the canonical Zen shape", async () => {
     await call("/v1/chat/completions", {
       method: "POST",
       body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
     });
     const last = upstream.requests[upstream.requests.length - 1];
     assert.match(last.headers["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
-    assert.match(last.headers["x-opencode-request"], /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+    assert.equal(last.headers["x-opencode-request"], undefined);
     assert.equal(last.headers["x-opencode-session"], last.headers["x-opencode-session-id"]);
+    assert.equal(last.headers["x-session-affinity"], last.headers["x-session-id"]);
+  });
+
+  test("incoming v2 session, affinity, parent, client and project headers are preserved", async () => {
+    const session = generateSessionId();
+    const affinity = generateSessionId();
+    const parent = generateSessionId();
+    await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "big-pickle", messages: [{ role: "user", content: "hi" }] },
+      headers: {
+        "x-opencode-session-id": session,
+        "x-session-affinity": affinity,
+        "x-opencode-parent-session-id": parent,
+        "x-opencode-client": "custom-client",
+        "x-opencode-project": "project-hash",
+      },
+    });
+    const last = upstream.requests[upstream.requests.length - 1];
+    assert.equal(last.headers["x-opencode-session-id"], session);
+    assert.equal(last.headers["x-session-affinity"], affinity);
+    assert.equal(last.headers["x-opencode-session"], affinity);
+    assert.equal(last.headers["x-parent-session-id"], parent);
+    assert.equal(last.headers["x-opencode-parent-session-id"], parent);
+    assert.equal(last.headers["x-opencode-client"], "custom-client");
+    assert.equal(last.headers["x-opencode-project"], "project-hash");
   });
 
   test("responses format gets the flat tool shape and is re-assembled", async () => {
@@ -785,11 +841,28 @@ describe("error handling", () => {
     });
     assert.equal(res.status, 200);
     const names = (upstream.requests[upstream.requests.length - 1].body.tools || []).map((t) => t.name);
-    for (const required of ["bash", "edit", "glob", "grep", "read"]) assert.ok(names.includes(required));
+    for (const required of ["edit", "glob", "grep", "question", "read", "shell", "skill", "subagent", "webfetch", "websearch", "write", "execute"]) assert.ok(names.includes(required));
     assert.equal(res.json().output[0].content[0].text, "responses ok");
   });
 
-  test("calls to injected tools are hidden from clients that declared none", async () => {
+  test("injected Responses API tools are hidden for both streaming and non-streaming clients", async () => {
+    const response = await call("/v1/responses", {
+      method: "POST",
+      body: { model: "response-inject-free", input: "hi" },
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.json().output.map((item) => item.type), ["message"]);
+
+    const streamed = await call("/v1/responses", {
+      method: "POST",
+      body: { model: "response-inject-free", input: "hi", stream: true },
+    });
+    assert.equal(streamed.status, 200);
+    assert.match(streamed.text, /responses ok/);
+    assert.doesNotMatch(streamed.text, /"name":"read"/);
+  });
+
+  test("calls to injected tools are hidden from non-streaming clients", async () => {
     const res = await call("/v1/chat/completions", {
       method: "POST",
       body: { model: "injectcall-free", messages: [{ role: "user", content: "hi" }] },
@@ -798,6 +871,17 @@ describe("error handling", () => {
     const data = res.json();
     assert.equal(data.choices[0].message.tool_calls, undefined);
     assert.equal(data.choices[0].finish_reason, "stop");
+  });
+
+  test("calls to injected tools are hidden from streaming clients", async () => {
+    const res = await call("/v1/chat/completions", {
+      method: "POST",
+      body: { model: "injectcall-free", messages: [{ role: "user", content: "hi" }], stream: true },
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.text, /Hello/);
+    assert.doesNotMatch(res.text, /"name":"read"/);
+    assert.doesNotMatch(res.text, /"arguments":"Path/);
   });
 
   test("upstream timeout → 504", async () => {

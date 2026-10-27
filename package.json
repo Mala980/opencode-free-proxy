@@ -13,6 +13,7 @@
     "test": "node --test test/*.test.mjs",
     "lint": "oxlint .",
     "doctor": "node scripts/doctor.mjs",
+    "compare:zen": "node scripts/doctor.mjs --compare-paths",
     "update:models": "node scripts/update-models.mjs",
     "capture:fixture": "node scripts/capture-cli-fixture.mjs"
   },

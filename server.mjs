@@ -2,9 +2,10 @@
 /**
  * opencode-free-proxy
  *
- * Exposes the free tier of OpenCode Zen (https://opencode.ai/zen/v1) as
- * OpenAI- and Anthropic-compatible HTTP APIs, so any tool that speaks those
- * formats can use the free models.
+ * Exposes OpenCode Zen's free tier as OpenAI- and Anthropic-compatible HTTP
+ * APIs, so any tool that speaks those formats can use the free models. The
+ * request profile follows the official v2.2.0 CLI; the upstream path remains
+ * configurable and is not changed on version evidence alone.
  *
  * Zero dependencies — `node server.mjs` is enough.
  */
@@ -18,8 +19,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   aggregateToCompletion,
   applyChunk,
+  applyV2ChatRequest,
+  DEFAULT_OC_CHANNEL,
+  DEFAULT_OC_VERSION,
   generateSessionId,
   newAggregate,
+  opencodeUserAgent,
+  OPENCODE_SESSION_RE,
   withFingerprintTools,
   withFingerprintToolsFlat,
   zenHeaders,
@@ -31,12 +37,12 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 export const PROXY_VERSION = "1.1.0";
 
-// Latest stable opencode 1.x (the line that still ships the Zen free tier
-// flow this proxy mimics). opencode 2.1.4 is on the dev branch and uses the same
-// `Bearer public` free-tier path — override with OC_VERSION if you want.
-const OC_VERSION_DEFAULT = "1.19.4";
-const OC_RUNTIME_DEFAULT = "bun/1.4.4";
-const OC_PROVIDER_UTILS = "4.0.23";
+// Latest upstream OpenCode v2 release captured from @opencode/cli-linux-x64.
+// Keep this aligned with models.json and the v2 CLI contract fixture. Retain
+// the existing endpoint until both Zen paths have been compared live.
+const OC_VERSION_DEFAULT = DEFAULT_OC_VERSION;
+const OC_CHANNEL_DEFAULT = DEFAULT_OC_CHANNEL;
+const ZEN_BASE_DEFAULT = "https://opencode.ai/zen/v1";
 
 // ── Config ─────────────────────────────────────────────────────────
 function num(value, fallback) {
@@ -48,17 +54,22 @@ function trimSlash(s) {
   return String(s || "").replace(/\/+$/, "");
 }
 
+function upstreamBase(cfg, model) {
+  return cfg.useModelBaseUrls && model?.baseUrl ? trimSlash(model.baseUrl) : cfg.zenBase;
+}
+
 export function loadConfig(overrides = {}) {
   const ocVersion = process.env.OC_VERSION || OC_VERSION_DEFAULT;
+  const ocChannel = process.env.OC_CHANNEL || OC_CHANNEL_DEFAULT;
   const cfg = {
     port: num(process.env.PROXY_PORT, 6446),
     host: process.env.PROXY_HOST || "0.0.0.0",
-    zenBase: trimSlash(process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1"),
+    zenBase: trimSlash(process.env.ZEN_BASE_URL || ZEN_BASE_DEFAULT),
+    useModelBaseUrls: process.env.ZEN_MODEL_BASE_URLS === "1",
     ocVersion,
-    ocRuntime: process.env.OC_RUNTIME || OC_RUNTIME_DEFAULT,
-    userAgent:
-      process.env.OC_USER_AGENT ||
-      `opencode/${ocVersion} ai-sdk/provider-utils/${OC_PROVIDER_UTILS} runtime/${process.env.OC_RUNTIME || OC_RUNTIME_DEFAULT}`,
+    ocChannel,
+    userAgent: process.env.OC_USER_AGENT || opencodeUserAgent(ocVersion, ocChannel),
+    maxTokensField: process.env.ZEN_MAX_TOKENS_FIELD === "max_tokens" ? "max_tokens" : "max_completion_tokens",
     client: process.env.OC_CLIENT || "cli",
     project: process.env.OC_PROJECT || "global",
     zenKey: process.env.ZEN_API_KEY || "public",
@@ -81,9 +92,8 @@ export function loadConfig(overrides = {}) {
     // request on the next free model instead of returning 429.
     fallback: process.env.FALLBACK === "1",
     fallbackMax: num(process.env.FALLBACK_MAX, 2),
-    // Zen's free tier only answers requests that look like the OpenCode CLI:
-    // streamed, carrying the bash/glob/grep/read tool quartet. Both are on by
-    // default; turn them off only when you use a real (paid) Zen key.
+    // The v2 CLI request profile is streamed and carries its captured builtin
+    // tool set. Both are on by default; turn them off only for a paid Zen route.
     forceStream: process.env.ZEN_FORCE_STREAM !== "0",
     injectTools: process.env.ZEN_TOOLS !== "0",
     stripInjectedTools: process.env.ZEN_STRIP_INJECTED_TOOLS !== "0",
@@ -324,9 +334,11 @@ async function fetchLiveModels(cfg) {
   try {
     const res = await fetch(`${cfg.zenBase}/models`, {
       headers: {
+        ...zenHeaders(
+          { userAgent: cfg.userAgent, zenKey: cfg.zenKey, client: cfg.client, project: cfg.project },
+          generateSessionId(),
+        ),
         Accept: "application/json",
-        "User-Agent": cfg.userAgent,
-        Authorization: `Bearer ${cfg.zenKey}`,
       },
       signal: ctl.signal,
     });
@@ -379,10 +391,18 @@ function mapUpstreamError(status, data, raw) {
 }
 
 // ── Zen request ────────────────────────────────────────────────────
-function buildZenHeaders(cfg, sessionId) {
+function buildZenHeaders(cfg, session) {
   return zenHeaders(
-    { userAgent: cfg.userAgent, zenKey: cfg.zenKey, client: cfg.client, project: cfg.project },
-    sessionId,
+    {
+      userAgent: cfg.userAgent,
+      zenKey: cfg.zenKey,
+      client: session.client || cfg.client,
+      project: session.project || cfg.project,
+      sessionId: session.sessionId,
+      affinityId: session.affinityId,
+      parentSessionId: session.parentSessionId,
+    },
+    session.sessionId,
   );
 }
 
@@ -409,6 +429,15 @@ const CHAT_PASSTHROUGH = [
   "reasoning_effort",
   "parallel_tool_calls",
   "stream_options",
+  "store",
+  "prompt_cache_key",
+  "prompt_cache_retention",
+  "prompt_cache_options",
+  "verbosity",
+  "service_tier",
+  "metadata",
+  "safety_identifier",
+  "tool_stream",
   "logprobs",
   "top_logprobs",
   "user",
@@ -423,8 +452,8 @@ function buildChatPayload(body, model) {
   return payload;
 }
 
-async function callZen(cfg, model, payload, sessionId) {
-  const url = `${cfg.zenBase}/${endpointPath(model.endpoint)}`;
+async function callZen(cfg, model, payload, session) {
+  const url = `${upstreamBase(cfg, model)}/${endpointPath(model.endpoint)}`;
   const ctl = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -435,7 +464,7 @@ async function callZen(cfg, model, payload, sessionId) {
   try {
     res = await fetch(url, {
       method: "POST",
-      headers: buildZenHeaders(cfg, sessionId),
+      headers: buildZenHeaders(cfg, session),
       body: JSON.stringify(payload),
       signal: ctl.signal,
     });
@@ -597,9 +626,14 @@ function upstreamErrorFromSse(payload) {
   return null;
 }
 
-async function pipeRawSse(upstream, res, format) {
+async function pipeRawSse(upstream, res, format, { dropToolNames = [] } = {}) {
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
+  const drop = new Set(dropToolNames.map((name) => name.toLowerCase()));
+  const hiddenToolIndexes = new Set();
+  const visibleToolIndexes = new Set();
+  const hiddenResponseItems = new Set();
+  const hiddenResponseIndexes = new Set();
   let buffer = "";
   let done = false;
 
@@ -608,14 +642,19 @@ async function pipeRawSse(upstream, res, format) {
     try {
       ({ done, value } = await reader.read());
     } catch {
-      break;
+      done = true;
     }
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    if (done) {
+      buffer += decoder.decode();
+      if (!buffer) break;
+      if (!buffer.endsWith("\n")) buffer += "\n";
+    } else {
+      buffer += decoder.decode(value, { stream: true });
+    }
 
     let idx;
     while ((idx = buffer.indexOf("\n")) !== -1) {
-      const line = buffer.slice(0, idx);
+      let line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
       let errored = null;
       if (line.startsWith("data:") || line.startsWith("event:")) {
@@ -635,6 +674,62 @@ async function pipeRawSse(upstream, res, format) {
         done = true;
         break;
       }
+
+      if (drop.size && line.startsWith("data:")) {
+        const payload = line.slice(5).trim();
+        const parsed = parseJsonSafe(payload);
+        if (parsed && format === "responses") {
+          const item = parsed.item;
+          const itemId = item?.id || parsed.item_id;
+          const outputIndex = parsed.output_index;
+          const hiddenById = itemId && hiddenResponseItems.has(itemId);
+          const hiddenByIndex = Number.isInteger(outputIndex) && hiddenResponseIndexes.has(outputIndex);
+          if (item?.type === "function_call" && drop.has(String(item.name || "").toLowerCase())) {
+            if (itemId) hiddenResponseItems.add(itemId);
+            if (Number.isInteger(outputIndex)) hiddenResponseIndexes.add(outputIndex);
+            continue;
+          }
+          if (hiddenById || hiddenByIndex) continue;
+          if (parsed.type === "response.completed" && Array.isArray(parsed.response?.output)) {
+            const output = parsed.response.output.filter((entry) => {
+              const hidden = entry?.type === "function_call" && drop.has(String(entry.name || "").toLowerCase());
+              if (hidden && entry.id) hiddenResponseItems.add(entry.id);
+              return !hidden;
+            });
+            if (output.length !== parsed.response.output.length) {
+              parsed.response.output = output;
+              line = `data: ${JSON.stringify(parsed)}`;
+            }
+          }
+        }
+        if (parsed && format !== "responses" && Array.isArray(parsed.choices)) {
+          for (const choice of parsed.choices) {
+            const calls = choice.delta?.tool_calls;
+            if (Array.isArray(calls)) {
+              const visible = calls.filter((call) => {
+                const index = call.index ?? 0;
+                if (hiddenToolIndexes.has(index)) return false;
+                if (drop.has(String(call.function?.name || "").toLowerCase())) {
+                  hiddenToolIndexes.add(index);
+                  return false;
+                }
+                visibleToolIndexes.add(index);
+                return true;
+              });
+              if (visible.length !== calls.length) {
+                if (visible.length) choice.delta.tool_calls = visible;
+                else delete choice.delta.tool_calls;
+                line = `data: ${JSON.stringify(parsed)}`;
+              }
+            }
+            if (choice.finish_reason === "tool_calls" && hiddenToolIndexes.size && !visibleToolIndexes.size) {
+              choice.finish_reason = "stop";
+              line = `data: ${JSON.stringify(parsed)}`;
+            }
+          }
+        }
+      }
+
       if (!(await writeChunk(res, line + "\n"))) {
         done = true;
         break;
@@ -642,11 +737,13 @@ async function pipeRawSse(upstream, res, format) {
     }
   }
 
-  if (buffer && !res.writableEnded) await writeChunk(res, buffer);
   if (!res.writableEnded) res.end();
 }
 
-async function pipeAsAnthropicSse(upstream, res, model, inputTokens) {
+async function pipeAsAnthropicSse(upstream, res, model, inputTokens, dropToolNames = []) {
+  const dropTools = new Set(dropToolNames.map((name) => name.toLowerCase()));
+  const hiddenToolIndexes = new Set();
+  const visibleToolIndexes = new Set();
   const msgId = ocId("msg");
   let started = false;
   let nextIndex = 0;
@@ -730,10 +827,15 @@ async function pipeAsAnthropicSse(upstream, res, model, inputTokens) {
     try {
       ({ done, value } = await reader.read());
     } catch {
-      break;
+      done = true;
     }
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    if (done) {
+      buffer += decoder.decode();
+      if (!buffer) break;
+      if (!buffer.endsWith("\n")) buffer += "\n";
+    } else {
+      buffer += decoder.decode(value, { stream: true });
+    }
 
     let idx;
     while ((idx = buffer.indexOf("\n")) !== -1) {
@@ -806,6 +908,12 @@ async function pipeAsAnthropicSse(upstream, res, model, inputTokens) {
 
       for (const tc of delta?.tool_calls || []) {
         const key = tc.index ?? 0;
+        if (hiddenToolIndexes.has(key)) continue;
+        if (dropTools.has(String(tc.function?.name || "").toLowerCase())) {
+          hiddenToolIndexes.add(key);
+          continue;
+        }
+        visibleToolIndexes.add(key);
         if (!toolIndex.has(key)) {
           await closeText();
           const blockIndex = nextIndex++;
@@ -838,7 +946,12 @@ async function pipeAsAnthropicSse(upstream, res, model, inputTokens) {
           await writeChunk(res, anthropicEvent("content_block_stop", { type: "content_block_stop", index: blockIndex }));
         }
         openBlocks.length = 0;
-        const stopReason = finish === "tool_calls" ? "tool_use" : finish === "length" ? "max_tokens" : "end_turn";
+        const stopReason =
+          finish === "tool_calls" && visibleToolIndexes.size
+            ? "tool_use"
+            : finish === "length"
+              ? "max_tokens"
+              : "end_turn";
         await writeChunk(
           res,
           anthropicEvent("message_delta", {
@@ -918,13 +1031,22 @@ export function createServer(overrides = {}) {
   const findModel = (id) => models().find((m) => m.id === id) || null;
   const findCandidate = (id) => candidates().find((m) => m.id === id) || null;
 
-  function sessionFor(user) {
+  function sessionFor(user, headers) {
+    const validId = (value) => (typeof value === "string" && OPENCODE_SESSION_RE.test(value.trim()) ? value.trim() : undefined);
+    const incomingSession = validId(headers["x-opencode-session-id"]) || validId(headers["x-opencode-session"]);
+    const incomingAffinity = validId(headers["x-session-affinity"]) || validId(headers["x-opencode-session"]);
     const now = Date.now();
     const current = sessions.get(user);
-    if (current && now - current.ts < cfg.sessionTtlMs) return current.id;
-    const session = { id: generateSessionId(), ts: now };
-    sessions.set(user, session);
-    return session.id;
+    const generated = current && now - current.ts < cfg.sessionTtlMs ? current.id : generateSessionId();
+    if (!current || now - current.ts >= cfg.sessionTtlMs) sessions.set(user, { id: generated, ts: now });
+
+    return {
+      sessionId: incomingSession || generated,
+      affinityId: incomingAffinity || incomingSession || generated,
+      parentSessionId: validId(headers["x-opencode-parent-session-id"]) || validId(headers["x-parent-session-id"]),
+      client: headers["x-opencode-client"] || cfg.client,
+      project: headers["x-opencode-project"] || cfg.project,
+    };
   }
 
   async function refreshZen() {
@@ -989,7 +1111,7 @@ export function createServer(overrides = {}) {
         const worker = async () => {
           for (let model = queue.shift(); model; model = queue.shift()) {
             const result = await probeModel({
-              zenBase: cfg.zenBase,
+              zenBase: upstreamBase(cfg, model),
               userAgent: cfg.userAgent,
               zenKey: cfg.zenKey,
               client: cfg.client,
@@ -1082,16 +1204,26 @@ export function createServer(overrides = {}) {
     return agg;
   }
 
-  async function collectResponsesPayload(upstream) {
+  async function collectResponsesPayload(upstream, dropToolNames = []) {
+    const drop = new Set(dropToolNames.map((name) => name.toLowerCase()));
+    const strip = (response) => {
+      if (!drop.size || !Array.isArray(response?.output)) return response;
+      return {
+        ...response,
+        output: response.output.filter(
+          (item) => !(item?.type === "function_call" && drop.has(String(item.name || "").toLowerCase())),
+        ),
+      };
+    };
     let completed = null;
     let last = null;
     for (const parsed of await collectSseLines(upstream)) {
       if (parsed.type === "response.completed" && parsed.response) completed = parsed.response;
       last = parsed;
     }
-    if (completed) return completed;
-    if (last?.response) return last.response;
-    if (last) return last;
+    if (completed) return strip(completed);
+    if (last?.response) return strip(last.response);
+    if (last) return strip(last);
     throw new UpstreamError(502, "upstream_error", "Zen returned an empty response");
   }
 
@@ -1099,9 +1231,9 @@ export function createServer(overrides = {}) {
    * `clientStream` is what the caller asked for; Zen is always called with
    * stream:true because the free tier rejects anything else.
    */
-  async function runUpstream({ res, model, body, format, user, clientStream, injectedTools }) {
-    const sessionId = sessionFor(user);
-    const upstream = await callZen(cfg, model, body, sessionId);
+  async function runUpstream({ res, model, body, format, user, requestHeaders, clientStream, injectedTools }) {
+    const session = sessionFor(user, requestHeaders);
+    const upstream = await callZen(cfg, model, body, session);
 
     if (!upstream.ok) {
       const raw = await upstream.text().catch(() => "");
@@ -1113,11 +1245,13 @@ export function createServer(overrides = {}) {
       if (!upstream.body) throw new UpstreamError(502, "upstream_error", "Zen returned an empty stream");
       if (format === "anthropic") {
         const inputTokens = estimateTokens(JSON.stringify(body.messages || []));
-        await pipeAsAnthropicSse(upstream, res, model, inputTokens);
+        await pipeAsAnthropicSse(upstream, res, model, inputTokens, cfg.stripInjectedTools ? injectedTools : []);
         return;
       }
       sseHeaders(res);
-      await pipeRawSse(upstream, res, format);
+      await pipeRawSse(upstream, res, format, {
+        dropToolNames: cfg.stripInjectedTools ? injectedTools : [],
+      });
       return;
     }
 
@@ -1125,7 +1259,11 @@ export function createServer(overrides = {}) {
     if (!upstream.body) throw new UpstreamError(502, "upstream_error", "Zen returned an empty response");
 
     if (format === "responses") {
-      sendJson(res, 200, await collectResponsesPayload(upstream));
+      sendJson(
+        res,
+        200,
+        await collectResponsesPayload(upstream, cfg.stripInjectedTools ? injectedTools : []),
+      );
       return;
     }
 
@@ -1162,7 +1300,14 @@ export function createServer(overrides = {}) {
           service: "opencode-free-proxy",
           version: PROXY_VERSION,
           ocVersion: cfg.ocVersion,
+          ocChannel: cfg.ocChannel,
+          userAgent: cfg.userAgent,
           zen: cfg.zenBase,
+          requestProfile: {
+            transport: "http-sse",
+            maxTokensField: cfg.maxTokensField,
+            modelBaseUrls: cfg.useModelBaseUrls,
+          },
           models: list.map((m) => m.id),
           modelCount: list.length,
           upstream: {
@@ -1296,11 +1441,16 @@ export function createServer(overrides = {}) {
         }
 
         const clientStream = Boolean(payload.stream);
+        if (format === "responses") {
+          if (cfg.forceStream) payload.stream = true;
+        } else {
+          applyV2ChatRequest(payload, { forceStream: cfg.forceStream, maxTokensField: cfg.maxTokensField });
+        }
+
         let injectedTools = [];
         if (cfg.injectTools) {
           injectedTools = format === "responses" ? withFingerprintToolsFlat(payload) : withFingerprintTools(payload);
         }
-        if (cfg.forceStream) payload.stream = true;
 
         logRequest(
           format === "anthropic" ? "ANT" : format === "responses" ? "RSP" : "OAI",
@@ -1313,7 +1463,7 @@ export function createServer(overrides = {}) {
         let attempt = 0;
         for (;;) {
           try {
-            await runUpstream({ res, model, body: payload, format, user, clientStream, injectedTools });
+            await runUpstream({ res, model, body: payload, format, user, requestHeaders: req.headers, clientStream, injectedTools });
             break;
           } catch (err) {
             const canFallback =

@@ -1,13 +1,13 @@
 {
   "$comment": "Free-tier OpenCode Zen models exposed by this proxy. Regenerate with `npm run update:models`; verify with `npm run doctor`.",
-  "updated": "2026-10-26",
-  "opencodeVersion": "1.19.4",
-  "opencodeLatest": "2.1.4",
+  "updated": "2026-10-28",
+  "opencodeVersion": "2.2.0",
+  "opencodeLatest": "2.2.0",
   "zenBaseUrl": "https://opencode.ai/zen/v1",
   "sources": [
     "https://opencode.ai/zen/v1/models (live model list)",
     "https://opencode.ai/docs/zen/ (endpoints + pricing)",
-    "https://github.com/anomalyco/models.dev/tree/main/providers/opencode/models (capability metadata)"
+    "https://github.com/anomalyco/models.dev/tree/dev/providers/opencode/models (capability metadata)"
   ],
   "models": [
     {
@@ -30,7 +30,8 @@
         "output": [
           "text"
         ]
-      }
+      },
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "space-bunny-free",
@@ -56,7 +57,8 @@
         ]
       },
       "status": "deprecated",
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "longcat-2.5-preview-free",
@@ -71,7 +73,8 @@
       "temperature": false,
       "notes": "Zero-retention provider. Thinking is toggleable.",
       "status": "deprecated",
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "mimo-v2.6-flash-free",
@@ -83,7 +86,8 @@
       "tool_call": true,
       "attachment": true,
       "structured_output": false,
-      "temperature": true
+      "temperature": true,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "fledge-alpha-free",
@@ -107,7 +111,8 @@
         ]
       },
       "status": "deprecated",
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "nemotron-3-ultra-free",
@@ -129,7 +134,8 @@
           "text"
         ]
       },
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "nemotron-3.5-lightning-free",
@@ -142,7 +148,8 @@
       "attachment": false,
       "structured_output": true,
       "temperature": true,
-      "notes": "NVIDIA trial endpoint: do not send personal or confidential data."
+      "notes": "NVIDIA trial endpoint: do not send personal or confidential data.",
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "ling-3.1-flash-free",
@@ -157,7 +164,8 @@
       "temperature": true,
       "notes": "Reasoning is a toggle (reasoning.enabled = true|false).",
       "status": "deprecated",
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "ling-3.0-flash-fin-free",
@@ -172,7 +180,8 @@
       "temperature": true,
       "notes": "Finance-tuned. Reasoning is a toggle.",
       "status": "deprecated",
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "deepseek-v4-flash-free",
@@ -187,7 +196,8 @@
       "temperature": true,
       "status": "deprecated",
       "notes": "Marked deprecated upstream but still served. Reasoning effort: low|high|max.",
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "mimo-v2.5-free",
@@ -213,7 +223,8 @@
           "text"
         ]
       },
-      "supported": false
+      "supported": false,
+      "baseUrl": "https://opencode.ai/inference/openai/v1"
     },
     {
       "id": "muse-spark-1.3-contributor-free",
@@ -226,7 +237,7 @@
       "attachment": true,
       "structured_output": true,
       "temperature": true,
-      "notes": "Served on the OpenAI Responses endpoint \u2014 use POST /v1/responses.",
+      "notes": "Served on the OpenAI Responses endpoint — use POST /v1/responses.",
       "modalities": {
         "input": [
           "text",
@@ -254,7 +265,7 @@
       "structured_output": true,
       "temperature": true,
       "status": "deprecated",
-      "notes": "Served on the OpenAI Responses endpoint \u2014 use POST /v1/responses.",
+      "notes": "Served on the OpenAI Responses endpoint — use POST /v1/responses.",
       "supported": false
     },
     {
@@ -279,7 +290,7 @@
       "baseUrl": "https://opencode.ai/inference/openai/v1",
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
+      "notes": "Free per models.dev — verify with `npm run doctor`."
     },
     {
       "id": "deepseek-v4.1-flash-free",
@@ -295,7 +306,7 @@
       "baseUrl": "https://opencode.ai/inference/openai/v1",
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
+      "notes": "Free per models.dev — verify with `npm run doctor`."
     },
     {
       "id": "flint-40b-free",
@@ -309,7 +320,7 @@
       "baseUrl": "https://opencode.ai/inference/openai/v1",
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
+      "notes": "Free per models.dev — verify with `npm run doctor`."
     },
     {
       "id": "glm-5.3-flash-free",
@@ -339,7 +350,7 @@
       },
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
+      "notes": "Free per models.dev — verify with `npm run doctor`."
     },
     {
       "id": "nemotron-3.5-super-vl-free",
@@ -364,7 +375,7 @@
       },
       "dynamic": true,
       "unverified": true,
-      "notes": "Free per models.dev \u2014 verify with `npm run doctor`."
+      "notes": "Free per models.dev — verify with `npm run doctor`."
     }
   ],
   "retired": {
