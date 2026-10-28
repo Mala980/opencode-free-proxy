@@ -13,7 +13,8 @@ capture does not prove Zen accepts it; see [Live path comparison](#live-path-com
 ```bash
 git clone https://github.com/Mala980/opencode-free-proxy.git
 cd opencode-free-proxy
-node server.mjs          # zero dependencies, no npm install needed
+npm install              # installs the Node binding and platform libcurl-impersonate
+npm start
 ```
 
 Server: `http://localhost:6446`. API keys are printed on start and stored in `api-keys.json`
@@ -82,10 +83,11 @@ official **OpenCode v2.2.0** Linux CLI (`@opencode/cli-linux-x64`):
 
 | Detail | v2.2.0 CLI capture | This proxy |
 |--------|--------------------|------------|
-| Transport | HTTP `POST /chat/completions`, streamed SSE | Node `fetch` over HTTP/1.1 + SSE; non-streaming clients are reassembled |
+| Transport | HTTP `POST /chat/completions`, streamed SSE | `libcurl-impersonate` Chrome 150 TLS / HTTP/2 (`h2` ALPN) + incremental SSE; non-streaming clients are reassembled |
 | `User-Agent` | `opencode/latest/2.2.0/cli` | Same by default; `OC_VERSION` / `OC_CHANNEL` can override it |
 | Session/cache affinity | `x-opencode-session`, `x-opencode-session-id`, `x-session-affinity`, `X-Session-Id`; fork requests may include parent-session headers | Canonical v2 `ses_…` IDs; preserves valid incoming v2 session, affinity, project, client and parent headers |
 | Streaming | `stream: true`, `stream_options.include_usage: true` | Same defaults; explicit usage preference is preserved |
+| Compression | `gzip, deflate, br, zstd` | Preserved; `CURLOPT_ACCEPT_ENCODING` enables native streaming decompression |
 | Token limit | `max_completion_tokens` | Converts client `max_tokens` to `max_completion_tokens` by default |
 | Builtin tools | `edit`, `glob`, `grep`, `question`, `read`, `shell`, `skill`, `subagent`, `webfetch`, `websearch`, `write`, `execute` | Injects the captured set if absent; caller tools are preserved |
 
@@ -124,13 +126,33 @@ the global default.
 
 ### TLS / browser fingerprint
 
-This proxy **does not use uTLS, BoringSSL, a Chrome ClientHello fingerprint, or
-HTTP/2 with `h2` ALPN**. It uses Node's built-in `fetch`/Undici transport
-(HTTP/1.1) and Node's TLS stack. The v2 User-Agent and request headers match
-the captured CLI shape, but they do not impersonate Chrome at the TLS layer.
-Changing `ZEN_BASE_URL` does not change that. `GET /health` reports this
-transport limitation. The live path comparison therefore checks endpoint and
-request behavior, not TLS-fingerprint parity.
+Upstream requests now use `impers` with the pinned `libcurl-impersonate`
+native library and its real **Chrome 150 / BoringSSL TLS and HTTP/2
+fingerprint**—not a User-Agent-only imitation. The transport applies the
+Chrome profile, forces libcurl's HTTP/2 mode after profile setup, and negotiates
+`h2` through ALPN. HTTPS responses that fall back to HTTP/1.1 are rejected.
+Proxy, model-list, verification, doctor, and catalog-update
+requests share this transport. The captured OpenCode v2 headers and
+`Accept-Encoding: gzip, deflate, br, zstd` are preserved.
+
+For SSE, the adapter sets `CURLOPT_ACCEPT_ENCODING` so libcurl decompresses
+compressed chunks as they arrive, then removes stale wire-level
+`content-encoding` and `content-length` response headers. It bridges callbacks
+to a streaming Web ReadableStream and aborts the native request when a client
+disconnects or a timeout expires.
+
+`npm install` installs `impers` and a platform-specific shared library. If the
+native impersonation library or requested profile is missing, upstream calls
+fail closed; the proxy does **not** silently fall back to Node TLS or ordinary
+libcurl. `GET /health` reports initialization state, the selected profile,
+errors, and the last negotiated HTTP version. Use `ZEN_TLS_PROFILE` only with
+a profile provided by the installed library. Linux musl/Alpine users may need
+to supply a compatible library using `LIBCURL_IMPERSONATE_PATH`.
+
+The local transport test verifies actual `h2` negotiation, incremental SSE,
+and gzip decompression against a local TLS server. That is not a Zen acceptance
+test: whether Zen accepts this profile and the configured endpoint still needs
+to be verified from a network with live access.
 
 ## API
 
@@ -243,9 +265,10 @@ ANTHROPIC_BASE_URL=http://localhost:6446 ANTHROPIC_API_KEY=YOUR_KEY claude
 ```bash
 git clone https://github.com/Mala980/opencode-free-proxy.git
 cd opencode-free-proxy
-node server.mjs                              # foreground
+npm ci --omit=dev                            # installs the pinned transport and native library
+npm start                                    # foreground
 # or
-nohup node server.mjs > proxy.log 2>&1 &     # background
+nohup npm start > proxy.log 2>&1 &           # background
 ```
 
 systemd unit:
@@ -278,6 +301,8 @@ WantedBy=multi-user.target
 | `PROXY_API_KEY` | – | Force a single fixed key (handy in Docker) |
 | `PUBLIC_MODELS` | `0` | `1` = `/v1/models` needs no key |
 | `ZEN_BASE_URL` | `https://opencode.ai/inference/openai/v1` | Global upstream base selected from the v2 model catalog; live acceptance is not yet confirmed |
+| `ZEN_TLS_PROFILE` | `chrome150` | Native libcurl-impersonate Chrome profile; must exist in the installed library |
+| `LIBCURL_IMPERSONATE_PATH` | auto-detected | Path to a compatible libcurl-impersonate shared library (useful on Linux musl/Alpine) |
 | `ZEN_MODEL_BASE_URLS` | `0` | `1` = use each model's models.dev `baseUrl` when available (e.g. `inference/openai/v1`) |
 | `ZEN_API_KEY` | `public` | Zen key — leave as `public` for the free tier, or drop in a real Zen key |
 | `ZEN_TIMEOUT_MS` | `120000` | Upstream timeout → `504` |

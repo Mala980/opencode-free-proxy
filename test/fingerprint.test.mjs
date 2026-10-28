@@ -74,6 +74,7 @@ describe("parity with the official OpenCode v2 CLI", () => {
     for (const name of [
       "content-type",
       "accept",
+      "accept-encoding",
       "authorization",
       "user-agent",
       "x-opencode-client",
@@ -87,6 +88,8 @@ describe("parity with the official OpenCode v2 CLI", () => {
       assert.ok(cliHeaders[name], `v2 CLI capture is missing ${name}`);
     }
     assert.equal(mine.accept, "*/*");
+    assert.equal(mine["accept-encoding"], "gzip, deflate, br, zstd");
+    assert.equal(mine["accept-encoding"], cliHeaders["accept-encoding"]);
     assert.equal(mine["x-opencode-request"], undefined);
     assert.equal(cliHeaders["x-opencode-request"], undefined);
     assert.match(cliHeaders["x-opencode-session"], OPENCODE_SESSION_RE);

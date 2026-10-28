@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { baseUrlAdvice, fetchFreeModels } from "../lib/models-dev.mjs";
+import { defaultZenTransport } from "../lib/transport.mjs";
 import {
   DEFAULT_OC_CHANNEL,
   DEFAULT_OC_VERSION,
@@ -47,6 +48,7 @@ const OC_CHANNEL = process.env.OC_CHANNEL || DEFAULT_OC_CHANNEL;
 const MODELS_DEV_URL = process.env.MODELS_DEV_API_URL || "https://models.dev/api.json";
 const MODELS_DEV_PROVIDER = process.env.MODELS_DEV_PROVIDER || "opencode";
 const USER_AGENT = process.env.OC_USER_AGENT || opencodeUserAgent(OC_VERSION, OC_CHANNEL);
+const transport = defaultZenTransport();
 
 const FREE_SUFFIX = /-free$/;
 const EXTRA_FREE = new Set(["big-pickle", "grok-code"]);
@@ -64,7 +66,9 @@ async function fetchLive() {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 20000);
   try {
-    const res = await fetch(`${ZEN_BASE}/models`, {
+    const res = await transport.request({
+      url: `${ZEN_BASE}/models`,
+      method: "GET",
       headers: {
         ...zenHeaders(
           {
@@ -78,6 +82,8 @@ async function fetchLive() {
         Accept: "application/json",
       },
       signal: ctl.signal,
+      timeoutMs: 20000,
+      stream: false,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -162,7 +168,8 @@ async function main() {
   if (!live && !dev) {
     console.error(`Could not reach ${ZEN_BASE}/models (${zenError}) nor models.dev (${devError}).`);
     console.error("models.json left untouched.");
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   if (dev) {
@@ -293,7 +300,8 @@ async function main() {
     const stale = removed.length || priced.length || updated.length;
     if (stale) {
       console.error("\nStale catalog: the bundled models no longer match models.dev / Zen.");
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
     console.log("\nCatalog is up to date.");
     return;
@@ -308,7 +316,9 @@ async function main() {
   console.log(`\nWrote ${MODELS_FILE}`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(() => transport.close().catch(() => {}));

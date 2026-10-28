@@ -7,7 +7,8 @@
  * request profile follows the official v2.2.0 CLI; the upstream path remains
  * configurable and is not changed on version evidence alone.
  *
- * Zero dependencies — `node server.mjs` is enough.
+ * Uses a pinned native libcurl-impersonate transport for Chrome TLS / HTTP/2.
+ * Run `npm install` before starting so the platform library is available.
  */
 
 import http from "node:http";
@@ -31,6 +32,7 @@ import {
   zenHeaders,
 } from "./lib/zen.mjs";
 import { HIDDEN_STATUSES, probeModel } from "./lib/probe.mjs";
+import { createZenTransport } from "./lib/transport.mjs";
 import { fetchFreeModels } from "./lib/models-dev.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -66,6 +68,7 @@ export function loadConfig(overrides = {}) {
     port: num(process.env.PROXY_PORT, 6446),
     host: process.env.PROXY_HOST || "0.0.0.0",
     zenBase: trimSlash(process.env.ZEN_BASE_URL || ZEN_BASE_DEFAULT),
+    tlsProfile: process.env.ZEN_TLS_PROFILE || "chrome150",
     useModelBaseUrls: process.env.ZEN_MODEL_BASE_URLS === "1",
     ocVersion,
     ocChannel,
@@ -329,11 +332,13 @@ function activeModels(catalog, state) {
   return out;
 }
 
-async function fetchLiveModels(cfg) {
+async function fetchLiveModels(cfg, transport) {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 15000);
+  const timer = setTimeout(() => ctl.abort(new Error("Model-list request timed out")), 15000);
   try {
-    const res = await fetch(`${cfg.zenBase}/models`, {
+    const res = await transport.request({
+      url: `${cfg.zenBase}/models`,
+      method: "GET",
       headers: {
         ...zenHeaders(
           { userAgent: cfg.userAgent, zenKey: cfg.zenKey, client: cfg.client, project: cfg.project },
@@ -342,6 +347,8 @@ async function fetchLiveModels(cfg) {
         Accept: "application/json",
       },
       signal: ctl.signal,
+      timeoutMs: 15000,
+      stream: false,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
@@ -453,31 +460,27 @@ function buildChatPayload(body, model) {
   return payload;
 }
 
-async function callZen(cfg, model, payload, session) {
+async function callZen(cfg, model, payload, session, transport, signal) {
   const url = `${upstreamBase(cfg, model)}/${endpointPath(model.endpoint)}`;
-  const ctl = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    ctl.abort();
-  }, cfg.timeoutMs);
-  let res;
   try {
-    res = await fetch(url, {
+    return await transport.request({
+      url,
       method: "POST",
       headers: buildZenHeaders(cfg, session),
       body: JSON.stringify(payload),
-      signal: ctl.signal,
+      signal,
+      timeoutMs: cfg.timeoutMs,
+      stream: true,
     });
   } catch (err) {
-    if (timedOut || err.name === "AbortError" || err.name === "TimeoutError") {
+    if (signal?.aborted) {
+      throw new UpstreamError(499, "client_closed_request", "Client disconnected before Zen completed the request");
+    }
+    if (/timeout|abort/i.test(err?.name || "") || /timed out/i.test(err?.message || "")) {
       throw new UpstreamError(504, "timeout_error", `Zen did not respond within ${cfg.timeoutMs}ms`);
     }
-    throw new UpstreamError(502, "upstream_error", `Cannot reach Zen: ${err.message}`);
-  } finally {
-    clearTimeout(timer);
+    throw new UpstreamError(502, "upstream_error", `Cannot reach Zen: ${err.message || String(err)}`);
   }
-  return res;
 }
 
 // ── Anthropic ⇄ OpenAI translation ─────────────────────────────────
@@ -992,7 +995,9 @@ async function pipeAsAnthropicSse(upstream, res, model, inputTokens, dropToolNam
 
 // ── Server ─────────────────────────────────────────────────────────
 export function createServer(overrides = {}) {
-  const cfg = loadConfig(overrides);
+  const { upstreamTransport: injectedTransport, ...configOverrides } = overrides;
+  const cfg = loadConfig(configOverrides);
+  const transport = injectedTransport || createZenTransport({ profile: cfg.tlsProfile });
   const catalog = loadCatalog(cfg.modelsFile);
   const keys = loadKeys(cfg);
   const sessions = new Map();
@@ -1012,6 +1017,7 @@ export function createServer(overrides = {}) {
     verifying: false,
     ready: false,
     startup: null,
+    transportStartup: null,
     hideDeprecated: cfg.hideDeprecated,
   };
 
@@ -1053,7 +1059,7 @@ export function createServer(overrides = {}) {
   async function refreshZen() {
     if (cfg.refreshSource === "models-dev") return;
     try {
-      state.liveIds = await fetchLiveModels(cfg);
+      state.liveIds = await fetchLiveModels(cfg, transport);
       state.lastRefreshAt = Date.now();
       state.lastRefreshError = null;
       console.log(`[MODELS] Zen lists ${state.liveIds.size} ids, ${models().length} free models exposed`);
@@ -1119,6 +1125,7 @@ export function createServer(overrides = {}) {
               project: cfg.project,
               model,
               timeoutMs: cfg.verifyTimeoutMs,
+              transport,
             });
             state.checked.set(model.id, result);
             if (cfg.logRequests) {
@@ -1232,9 +1239,9 @@ export function createServer(overrides = {}) {
    * `clientStream` is what the caller asked for; Zen is always called with
    * stream:true because the free tier rejects anything else.
    */
-  async function runUpstream({ res, model, body, format, user, requestHeaders, clientStream, injectedTools }) {
+  async function runUpstream({ res, model, body, format, user, requestHeaders, clientStream, injectedTools, signal }) {
     const session = sessionFor(user, requestHeaders);
-    const upstream = await callZen(cfg, model, body, session);
+    const upstream = await callZen(cfg, model, body, session, transport, signal);
 
     if (!upstream.ok) {
       const raw = await upstream.text().catch(() => "");
@@ -1283,6 +1290,10 @@ export function createServer(overrides = {}) {
   }
 
   const server = http.createServer(async (req, res) => {
+    const clientAbort = new AbortController();
+    res.on("close", () => {
+      if (!res.writableEnded) clientAbort.abort(new Error("Downstream client disconnected"));
+    });
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     const route = `${req.method} ${url.pathname}`;
 
@@ -1296,6 +1307,7 @@ export function createServer(overrides = {}) {
       // ── Public endpoints ──
       if (route === "GET /" || route === "GET /health") {
         const list = models();
+        const transportStatus = transport.getStatus?.() || {};
         sendJson(res, 200, {
           status: "ok",
           service: "opencode-free-proxy",
@@ -1305,8 +1317,16 @@ export function createServer(overrides = {}) {
           userAgent: cfg.userAgent,
           zen: cfg.zenBase,
           requestProfile: {
-            transport: "Node fetch / HTTP/1.1 / SSE",
-            tlsImpersonation: false,
+            transport: transportStatus.transport || "libcurl-impersonate (not ready)",
+            tlsImpersonation: transportStatus.tlsImpersonation === true,
+            tlsBackend: transportStatus.tlsBackend || null,
+            libcurlVersion: transportStatus.libcurlVersion || null,
+            tlsProfile: cfg.tlsProfile,
+            transportReady: Boolean(transportStatus.ready),
+            httpVersionRequested: "2",
+            alpnRequested: ["h2"],
+            lastNegotiatedHttpVersion: transportStatus.lastNegotiatedHttpVersion || null,
+            transportError: transportStatus.lastError || null,
             maxTokensField: cfg.maxTokensField,
             modelBaseUrls: cfg.useModelBaseUrls,
           },
@@ -1465,7 +1485,17 @@ export function createServer(overrides = {}) {
         let attempt = 0;
         for (;;) {
           try {
-            await runUpstream({ res, model, body: payload, format, user, requestHeaders: req.headers, clientStream, injectedTools });
+            await runUpstream({
+              res,
+              model,
+              body: payload,
+              format,
+              user,
+              requestHeaders: req.headers,
+              clientStream,
+              injectedTools,
+              signal: clientAbort.signal,
+            });
             break;
           } catch (err) {
             const canFallback =
@@ -1492,6 +1522,7 @@ export function createServer(overrides = {}) {
 
       sendJson(res, 404, { error: { message: `Not found: ${route}`, type: "not_found" } });
     } catch (err) {
+      if (res.destroyed) return;
       if (err instanceof UpstreamError) {
         if (!res.headersSent && !res.writableEnded) {
           sendError(res, err.status, {
@@ -1520,6 +1551,7 @@ export function createServer(overrides = {}) {
   return {
     server,
     cfg,
+    transport,
     catalog,
     keys,
     state,
@@ -1530,13 +1562,27 @@ export function createServer(overrides = {}) {
       if (state.timer) clearInterval(state.timer);
       if (state.verifyTimer) clearInterval(state.verifyTimer);
       await state.startup?.catch(() => {});
+      await state.transportStartup?.catch(() => {});
       await new Promise((resolve) => server.close(resolve));
+      await transport.close?.();
     },
     /** Resolves when the first refresh + verification round has settled. */
     ready: () => state.startup || Promise.resolve(),
     listen: async () => {
-      // Bind first: a slow or unreachable Zen must never keep the port closed.
+      // Bind first: native-library initialization and network work must never keep the port closed.
       await new Promise((resolve) => server.listen(cfg.port, cfg.host, resolve));
+      if (typeof transport.prepare === "function") {
+        state.transportStartup = Promise.resolve()
+          .then(() => transport.prepare())
+          .then(() => {
+            if (!injectedTransport) console.log(`[TLS] ${cfg.tlsProfile} impersonation ready; requesting HTTP/2 (h2)`);
+          })
+          .catch((err) => {
+            if (!injectedTransport) console.log(`[TLS] impersonation unavailable: ${err.message}`);
+          });
+      } else {
+        state.transportStartup = Promise.resolve();
+      }
       state.startup = (async () => {
         if (cfg.refreshModels) {
           await refresh();

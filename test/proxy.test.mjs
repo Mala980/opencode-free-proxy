@@ -19,6 +19,40 @@ function sse(payload) {
   return `data: ${JSON.stringify(payload)}\n\n`;
 }
 
+function createMockTransport() {
+  const transportStatus = {
+    ready: true,
+    tlsImpersonation: false,
+    transport: "test fetch / HTTP/1.1",
+    lastNegotiatedHttpVersion: "1.1",
+    lastError: null,
+  };
+  return {
+    async prepare() {
+      return transportStatus;
+    },
+    getStatus() {
+      return { ...transportStatus };
+    },
+    async request({ url, method = "GET", headers, body, signal, timeoutMs = 120000 }) {
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason || new Error("Test request aborted"));
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+      const timer = setTimeout(() => controller.abort(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+      try {
+        const init = { method, headers, signal: controller.signal };
+        if (body !== undefined && !["GET", "HEAD"].includes(method.toUpperCase())) init.body = body;
+        return await fetch(url, init);
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+      }
+    },
+    async close() {},
+  };
+}
+
 function startMockUpstream() {
   const requests = [];
   const server = http.createServer((req, res) => {
@@ -289,6 +323,7 @@ before(async () => {
     modelsFile,
     logRequests: false,
     verify: false,
+    upstreamTransport: createMockTransport(),
   });
   const addr = await app.listen();
   await app.ready(); // first refresh + verification round
@@ -371,6 +406,7 @@ async function withProxy(overrides, fn) {
     modelsFile: app.cfg.modelsFile,
     logRequests: false,
     verify: false,
+    upstreamTransport: createMockTransport(),
     ...overrides,
   });
   const addr = await instance.listen();
@@ -660,6 +696,7 @@ describe("runtime verification", () => {
       refreshModels: false,
       verify: true,
       verifyTimeoutMs: 300,
+      upstreamTransport: createMockTransport(),
     });
     const addr = await instance.listen();
     await instance.ready();
@@ -897,6 +934,7 @@ describe("error handling", () => {
       timeoutMs: 300,
       logRequests: false,
       verify: false,
+      upstreamTransport: createMockTransport(),
     });
     const addr = await slow.listen();
     const res = await new Promise((resolve, reject) => {
@@ -954,6 +992,7 @@ describe("models.dev as the free-model source", () => {
         logRequests: false,
         verify: false,
         modelsDevUrl: `http://127.0.0.1:${port}/api.json`,
+        upstreamTransport: createMockTransport(),
         ...overrides,
       });
       const addr = await instance.listen();
@@ -1090,6 +1129,7 @@ describe("hiding models upstream already deprecated", () => {
       logRequests: false,
       verify: false,
       refreshModels: false,
+      upstreamTransport: createMockTransport(),
       ...overrides,
     });
     return instance.listen().then(async (addr) => {

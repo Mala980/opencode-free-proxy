@@ -2,7 +2,7 @@
 
 How to work in this repo. The conventions follow
 [anomalyco/opencode](https://github.com/anomalyco/opencode)'s own AGENTS.md,
-scaled down to a single-file, zero-dependency Node proxy.
+scaled down to a Node proxy with a small, pinned native upstream transport.
 
 ## Ground rules
 
@@ -16,8 +16,9 @@ scaled down to a single-file, zero-dependency Node proxy.
 - Upstream asks for a small looping SVG under `### Visual` in the body of
   user-facing `feat`/`fix`/`perf` PRs (240×72, < 8 KB, CSS/SMIL only). Do the
   same when the change is visible to users.
-- Runtime stays **dependency-free** (`server.mjs` uses only `node:` builtins).
-  Dev-only dependencies (linters) are fine.
+- The HTTP service uses Node builtins plus `impers` and pinned platform
+  `libcurl-impersonate` binaries for Chrome TLS/HTTP2. Fail closed if native
+  impersonation is unavailable; never fall back to ordinary Node/libcurl TLS.
 - Lint with `oxlint` (same linter upstream uses): `npm run lint`.
 
 ## Style
@@ -53,18 +54,20 @@ Layout:
 |------|--------|
 | `test/proxy.test.mjs` | end-to-end against a **mock Zen**: OpenAI/Anthropic/Responses formats, streaming, error mapping, fallback, runtime verification |
 | `test/fingerprint.test.mjs` | **contract**: what we send must equal what the real CLI sends (from `test/fixtures/opencode-cli-*.json`) |
+| `test/transport.test.mjs` | transport adapter contract plus local TLS/H2/SSE/decompression verification (skips if native library or OpenSSL is unavailable) |
 | `test/models-dev.test.mjs` | **contract**: the models.dev reader against real provider files (from `test/fixtures/models-dev-toml/`) |
 
-CI keeps the upstream v2 lint/test split but adapts it to this Node-only repo:
-`check.yml` runs oxlint; `check-test.yml` tests supported Node 18/20/22/24 and
-adds Node 24 on Windows. Upstream v2 uses Bun, TypeScript, Turbo and a much
-larger Linux/Windows build/e2e matrix; this proxy has no corresponding packages
-or browser suite.
+CI keeps the upstream v2 lint/test split but adapts it to this Node service:
+`check.yml` runs oxlint; `check-test.yml` installs the lockfile and tests Node
+18/20/22/24 on Linux plus Node 24 on Windows. Upstream v2 uses Bun, TypeScript,
+Turbo and a much larger Linux/Windows build/e2e matrix; this proxy has no
+corresponding monorepo packages or browser suite.
 
 Two rules for tests:
 
-1. Never hit the network in `npm test`. Everything goes through the mock
-   upstream in `test/proxy.test.mjs`.
+1. Never hit the public network in `npm test`. Proxy tests use the mock
+   upstream in `test/proxy.test.mjs`; the transport test may bind a local TLS
+   server to verify actual H2/SSE/decompression behavior.
 2. When the client fingerprint changes, re-capture the fixture first
    (`npm run capture:fixture -- --bin $(command -v opencode)`), then let the
    contract test tell you what to fix.

@@ -28,6 +28,16 @@
     "README.md"
   ],
   "license": "MIT",
+  "dependencies": {
+    "impers": "0.1.2"
+  },
+  "optionalDependencies": {
+    "@searchcast/libcurl-darwin-arm64": "0.1.0",
+    "@searchcast/libcurl-darwin-x64": "0.1.0",
+    "@searchcast/libcurl-linux-arm64": "0.1.0",
+    "@searchcast/libcurl-linux-x64": "0.1.0",
+    "@searchcast/libcurl-win32-x64": "0.1.0"
+  },
   "devDependencies": {
     "oxlint": "^1.86.0"
   }

@@ -1,8 +1,8 @@
 name: check
 
-# Keep upstream v2's lint/test split, adapted for this dependency-free Node
-# service. OpenCode runs Bun + TypeScript typechecking; this plain-JS repo uses
-# oxlint and has no TypeScript build step.
+# Keep upstream v2's lint/test split, adapted for this Node service and its
+# native libcurl-impersonate transport. OpenCode runs Bun + TypeScript
+# typechecking; this plain-JS repo uses oxlint and has no TypeScript build step.
 
 on:
   push:
@@ -35,7 +35,7 @@ jobs:
           node-version: "22"
 
       - name: Install
-        run: npm install
+        run: npm ci
 
       - name: Lint
         run: npm run lint

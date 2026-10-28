@@ -16,8 +16,9 @@
  * or by flipping `supported` back to true.
  *
  * Without --server it talks to Zen directly, using exactly the same
- * fingerprint the proxy uses (v2.2.0 User-Agent, canonical session/affinity
- * IDs, streamed chat, v2 token field and captured builtin tools). That tells
+ * fingerprint the proxy uses (Chrome 150/BoringSSL HTTP/2 transport, v2.2.0
+ * User-Agent, canonical session/affinity IDs, streamed chat, v2 token field
+ * and captured builtin tools). That tells
  * you whether the free tier is reachable from your machine and whether the
  * fingerprint is still accepted. With --server it goes through your proxy.
  */
@@ -26,6 +27,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyProbe, probeModel } from "../lib/probe.mjs";
+import { defaultZenTransport } from "../lib/transport.mjs";
 import {
   DEFAULT_OC_CHANNEL,
   DEFAULT_OC_VERSION,
@@ -36,6 +38,7 @@ import {
 
 const HERE = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const MODELS_FILE = process.env.MODELS_FILE || path.join(HERE, "models.json");
+const transport = defaultZenTransport();
 
 const args = process.argv.slice(2);
 const getArg = (name, fallback) => {
@@ -97,7 +100,9 @@ async function listZenModels(zenBase) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${zenBase.replace(/\/+$/, "")}/models`, {
+    const res = await transport.request({
+      url: `${zenBase.replace(/\/+$/, "")}/models`,
+      method: "GET",
       headers: {
         ...zenHeaders(
           { userAgent: USER_AGENT, zenKey: process.env.ZEN_API_KEY || "public", client: "cli", project: "global" },
@@ -105,12 +110,14 @@ async function listZenModels(zenBase) {
         ),
       },
       signal: ctl.signal,
+      timeoutMs,
+      stream: false,
     });
     const json = await res.json().catch(() => null);
     const ids = (json?.data || []).map((model) => model?.id).filter(Boolean);
     return { status: res.status, ids, detail: res.ok ? `${ids.length} models` : `HTTP ${res.status}` };
   } catch (error) {
-    return { status: 0, ids: [], detail: error.name === "AbortError" ? `timeout after ${timeoutMs}ms` : error.message };
+    return { status: 0, ids: [], detail: /timeout|abort/i.test(error.name || "") ? `timeout after ${timeoutMs}ms` : error.message };
   } finally {
     clearTimeout(timer);
   }
@@ -125,6 +132,7 @@ async function probeZen(model, zenBase = modelBase(model)) {
     project: "global",
     model,
     timeoutMs: TIMEOUT,
+    transport,
   });
   return { ...result, ...(LABELS[result.status] || { ok: false, label: result.status }), text: result.detail };
 }
@@ -191,7 +199,7 @@ async function main() {
       console.log();
     }
     console.log(`${answered}/${ZEN_PATHS.length} paths returned a generated completion.`);
-    if (!answered) process.exit(1);
+    if (!answered) process.exitCode = 1;
     return;
   }
 
@@ -227,7 +235,8 @@ async function main() {
   );
   if (SERVER && !key) {
     console.log("No proxy API key found — pass --key or set PROXY_API_KEY.");
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   if (APPLY) {
     if (!dead.length) {
@@ -263,11 +272,13 @@ async function main() {
         ? "Nothing works through the proxy. Check the proxy logs, then run `npm run doctor` without --server."
         : "Nothing works. If every model says FREE-TIER GATE, the fingerprint in lib/zen.mjs is out of date.",
     );
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(() => transport.close().catch(() => {}));
