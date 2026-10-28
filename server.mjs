@@ -7,7 +7,8 @@
  * request profile follows the official v2.2.0 CLI; the upstream path remains
  * configurable and is not changed on version evidence alone.
  *
- * Uses a pinned native libcurl-impersonate transport for Chrome TLS / HTTP/2.
+ * Uses pinned libcurl-impersonate TLS; HTTP/1.1 matches OpenCode v2 by default,
+ * with optional Bun-compatible HTTP/2 negotiation.
  * Run `npm install` before starting so the platform library is available.
  */
 
@@ -1323,9 +1324,10 @@ export function createServer(overrides = {}) {
             libcurlVersion: transportStatus.libcurlVersion || null,
             tlsProfile: cfg.tlsProfile,
             transportReady: Boolean(transportStatus.ready),
-            httpVersionRequested: "2",
+            httpVersionRequested: transportStatus.http2Enabled ? "2 (HTTP/1.1 fallback)" : "1.1",
             httpVersionScope: "OpenCode HTTPS upstream only",
-            alpnRequested: ["h2"],
+            http2Enabled: transportStatus.http2Enabled === true,
+            alpnRequested: transportStatus.http2Enabled ? ["h2", "http/1.1"] : ["http/1.1"],
             lastNegotiatedHttpVersion: transportStatus.lastNegotiatedHttpVersion || null,
             transportError: transportStatus.lastError || null,
             maxTokensField: cfg.maxTokensField,
@@ -1576,7 +1578,10 @@ export function createServer(overrides = {}) {
         state.transportStartup = Promise.resolve()
           .then(() => transport.prepare())
           .then(() => {
-            if (!injectedTransport) console.log(`[TLS] ${cfg.tlsProfile} impersonation ready; HTTP/2 (h2) required only for OpenCode HTTPS`);
+            if (!injectedTransport) {
+              const policy = transport.getStatus().httpVersionPolicy || "HTTP/1.1";
+              console.log(`[TLS] ${cfg.tlsProfile} impersonation ready; upstream HTTP version: ${policy}`);
+            }
           })
           .catch((err) => {
             if (!injectedTransport) console.log(`[TLS] impersonation unavailable: ${err.message}`);

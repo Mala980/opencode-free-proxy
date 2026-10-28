@@ -83,7 +83,7 @@ official **OpenCode v2.2.0** Linux CLI (`@opencode/cli-linux-x64`):
 
 | Detail | v2.2.0 CLI capture | This proxy |
 |--------|--------------------|------------|
-| Transport | HTTP `POST /chat/completions`, streamed SSE | `libcurl-impersonate` Chrome 150 TLS / HTTP/2 (`h2` ALPN) + incremental SSE; non-streaming clients are reassembled |
+| Transport | `FetchHttpClient` over Bun `fetch()`; the v2.2.0 build does not enable experimental HTTP/2, so HTTP/1.1 is the default | `libcurl-impersonate` Chrome 150/BoringSSL; HTTP/1.1 by default, with opportunistic `h2` only when `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1`; incremental SSE, non-streaming clients reassembled |
 | `User-Agent` | `opencode/latest/2.2.0/cli` | Same by default; `OC_VERSION` / `OC_CHANNEL` can override it |
 | Session/cache affinity | `x-opencode-session`, `x-opencode-session-id`, `x-session-affinity`, `X-Session-Id`; fork requests may include parent-session headers | Canonical v2 `ses_…` IDs; preserves valid incoming v2 session, affinity, project, client and parent headers |
 | Streaming | `stream: true`, `stream_options.include_usage: true` | Same defaults; explicit usage preference is preserved |
@@ -126,14 +126,23 @@ the global default.
 
 ### TLS / browser fingerprint
 
-OpenCode upstream traffic uses `impers` with the pinned `libcurl-impersonate`
-native library and its real **Chrome 150 / BoringSSL TLS fingerprint**—not a
-User-Agent-only imitation. **HTTP/2 (`h2` ALPN) is required only for HTTPS
-requests to `opencode.ai` (and its subdomains)**; other destinations through
-the transport are pinned to HTTP/1.1. An OpenCode HTTPS response that falls
-back to HTTP/1.1 is rejected. The client-to-proxy API connection and the
-proxy-to-client response are separate and remain on the local Node HTTP server;
-this upstream `h2` setting does not change them.
+OpenCode v2.2.0 builds its CLI with Bun 1.4.4 and sends provider calls through
+`FetchHttpClient` → `fetch()` without a protocol override or the experimental
+HTTP/2 flag. This is visible in OpenCode's [`executor.ts`](https://github.com/anomalyco/opencode/blob/v2.2.0/packages/ai/src/route/executor.ts), [`app-node-platform.ts`](https://github.com/anomalyco/opencode/blob/v2.2.0/packages/util/src/effect/app-node-platform.ts), and [`CLI build script`](https://github.com/anomalyco/opencode/blob/v2.2.0/packages/cli/script/build.ts). Its default is therefore HTTP/1.1. The proxy mirrors that default:
+OpenCode HTTPS requests use HTTP/1.1 unless
+`BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT=1` is set. With that Bun opt-in,
+the proxy prefers `h2` via ALPN but accepts an HTTP/1.1 fallback, matching
+`fetch()` when no per-request protocol is forced. The opt-in is scoped to
+`opencode.ai` and its subdomains; redirects outside that scope are rejected.
+Other transport destinations stay on HTTP/1.1. Bun documents that an
+unspecified fetch protocol offers `h2` only when its experimental HTTP/2 flag
+is enabled ([protocol option](https://bun.com/reference/globals/BunFetchRequestInit/protocol)).
+
+The upstream TLS connection still uses `impers` with the pinned
+`libcurl-impersonate` native library and its real **Chrome 150 / BoringSSL TLS
+fingerprint**—not a User-Agent-only imitation. The client-to-proxy API
+connection and proxy-to-client response are separate and remain on the local
+Node HTTP server; the upstream protocol setting does not change them.
 
 Zen generation, live model-list refresh, verification, and direct doctor probes
 share this transport. Fetches from models.dev and client-facing proxy traffic do
@@ -307,6 +316,7 @@ WantedBy=multi-user.target
 | `PUBLIC_MODELS` | `0` | `1` = `/v1/models` needs no key |
 | `ZEN_BASE_URL` | `https://opencode.ai/inference/openai/v1` | Global upstream base selected from the v2 model catalog; live acceptance is not yet confirmed |
 | `ZEN_TLS_PROFILE` | `chrome150` | Native libcurl-impersonate Chrome profile; must exist in the installed library |
+| `BUN_FEATURE_FLAG_EXPERIMENTAL_HTTP2_CLIENT` | unset | `1` = opt into `h2` for OpenCode HTTPS requests, with HTTP/1.1 fallback; mirrors Bun Fetch's experimental HTTP/2 flag |
 | `LIBCURL_IMPERSONATE_PATH` | auto-detected | Path to a compatible libcurl-impersonate shared library (useful on Linux musl/Alpine) |
 | `ZEN_MODEL_BASE_URLS` | `0` | `1` = use each model's models.dev `baseUrl` when available (e.g. `inference/openai/v1`) |
 | `ZEN_API_KEY` | `public` | Zen key — leave as `public` for the free tier, or drop in a real Zen key |

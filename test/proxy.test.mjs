@@ -427,6 +427,8 @@ describe("health & discovery", () => {
     assert.equal(data.upstream.live, true);
     assert.equal(data.requestProfile.tlsImpersonation, false);
     assert.equal(data.requestProfile.httpVersionScope, "OpenCode HTTPS upstream only");
+    assert.equal(data.requestProfile.httpVersionRequested, "1.1");
+    assert.equal(data.requestProfile.http2Enabled, false);
     assert.match(data.requestProfile.transport, /HTTP\/1\.1/);
     assert.ok(data.models.includes("big-pickle"));
     assert.ok(data.models.includes("brand-new-model-free"), "new free models on Zen are picked up");

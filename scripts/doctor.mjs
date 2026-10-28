@@ -16,8 +16,9 @@
  * or by flipping `supported` back to true.
  *
  * Without --server it talks to Zen directly, using exactly the same
- * fingerprint the proxy uses (Chrome 150/BoringSSL HTTP/2 transport, v2.2.0
- * User-Agent, canonical session/affinity IDs, streamed chat, v2 token field
+ * fingerprint the proxy uses (Chrome 150/BoringSSL transport; HTTP/1.1 by
+ * default, optional Bun-compatible h2, v2.2.0 User-Agent, canonical session IDs,
+ * affinity headers, streamed chat, v2 token field
  * and captured builtin tools). That tells
  * you whether the free tier is reachable from your machine and whether the
  * fingerprint is still accepted. With --server it goes through your proxy.

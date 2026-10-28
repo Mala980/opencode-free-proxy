@@ -30,7 +30,7 @@ describe("Zen libcurl-impersonate transport", () => {
     }
   });
 
-  test("rejects an HTTPS response that falls back to HTTP/1.1", async () => {
+  test("rejects HTTP/1.1 only when strict HTTP/2 is explicitly required", async () => {
     const session = {
       async request(method, url, options) {
         options.headerCallback(Buffer.from("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n"));
@@ -47,7 +47,7 @@ describe("Zen libcurl-impersonate transport", () => {
     });
     try {
       await assert.rejects(
-        transport.request({ url: "https://opencode.ai/v1/models", stream: true, timeoutMs: 1000 }),
+        transport.request({ url: "https://opencode.ai/v1/models", stream: true, requireHttp2: true, timeoutMs: 1000 }),
         /HTTP\/1\.1.*HTTP\/2 with h2 ALPN is required/,
       );
       assert.equal(transport.getStatus().lastNegotiatedHttpVersion, null);
@@ -56,7 +56,7 @@ describe("Zen libcurl-impersonate transport", () => {
     }
   });
 
-  test("refuses plaintext requests to OpenCode so its upstream always uses HTTPS h2", async () => {
+  test("refuses plaintext requests to OpenCode", async () => {
     const session = { async request() { throw new Error("request must not start"); }, async close() {} };
     const transport = createZenTransport({
       profile: "chrome150",
@@ -66,7 +66,7 @@ describe("Zen libcurl-impersonate transport", () => {
     try {
       await assert.rejects(
         transport.request({ url: "http://opencode.ai/v1/models" }),
-        /OpenCode upstream requests require HTTPS with HTTP\/2 h2/,
+        /OpenCode upstream requests require HTTPS/,
       );
     } finally {
       await transport.close();
@@ -88,6 +88,7 @@ describe("Zen libcurl-impersonate transport", () => {
     };
     const transport = createZenTransport({
       profile: "chrome150",
+      experimentalHttp2: true,
       sessionFactory: async () => ({ session, api: nativeApi, tlsImpersonation: true }),
     });
 
@@ -102,11 +103,12 @@ describe("Zen libcurl-impersonate transport", () => {
     }
   });
 
-  test("uses HTTP/1.1 for HTTPS destinations outside OpenCode", async () => {
-    let captured;
+  test("uses HTTP/1.1 by default for OpenCode and other HTTPS destinations", async () => {
+    const captured = [];
     const session = {
       async request(method, url, options) {
-        captured = { method, url, options };
+        captured.push({ method, url, options });
+        options.headerCallback(Buffer.from("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n"));
         return {
           statusCode: 200,
           statusText: "OK",
@@ -123,14 +125,64 @@ describe("Zen libcurl-impersonate transport", () => {
     });
 
     try {
-      const response = await transport.request({ url: "https://models.example/api.json" });
-      assert.equal(response.status, 200);
-      assert.equal(await response.text(), '{"ok":true}');
-      assert.equal(captured.options.httpVersion, "1.1");
+      const zenResponse = await transport.request({ url: "https://opencode.ai/v1/models" });
+      const otherResponse = await transport.request({ url: "https://models.example/api.json" });
+      assert.equal(zenResponse.status, 200);
+      assert.equal(otherResponse.status, 200);
+      assert.equal(await zenResponse.text(), '{"ok":true}');
+      assert.equal(await otherResponse.text(), '{"ok":true}');
+      assert.equal(captured.length, 2);
+      for (const request of captured) {
+        assert.equal(request.options.httpVersion, "1.1");
+        assert.equal(
+          request.options.curlOptions[nativeApi.CurlOpt.HTTP_VERSION],
+          nativeApi.CurlHttpVersion.CURL_HTTP_VERSION_1_1,
+        );
+      }
+      assert.equal(transport.getStatus().lastNegotiatedHttpVersion, "1.1");
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("mirrors Bun's experimental HTTP/2 fetch flag with an HTTP/1.1 fallback", async () => {
+    const captured = [];
+    const session = {
+      async request(method, url, options) {
+        captured.push({ method, url, options });
+        options.headerCallback(Buffer.from("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n"));
+        return {
+          statusCode: 200,
+          statusText: "OK",
+          headers: { toObject: () => ({ "content-type": "application/json" }) },
+          httpVersionString: "1.1",
+          content: Buffer.from('{"ok":true}'),
+        };
+      },
+      async close() {},
+    };
+    const transport = createZenTransport({
+      profile: "chrome150",
+      experimentalHttp2: true,
+      sessionFactory: async () => ({ session, api: nativeApi, tlsImpersonation: true }),
+    });
+
+    try {
+      const zenResponse = await transport.request({ url: "https://opencode.ai/v1/models" });
+      const otherResponse = await transport.request({ url: "https://models.example/api.json" });
+      assert.equal(zenResponse.status, 200, "HTTP/1.1 fallback is allowed, as with fetch() without a forced protocol");
+      assert.equal(otherResponse.status, 200);
+      assert.equal(captured[0].options.httpVersion, "2");
       assert.equal(
-        captured.options.curlOptions[nativeApi.CurlOpt.HTTP_VERSION],
+        captured[0].options.curlOptions[nativeApi.CurlOpt.HTTP_VERSION],
+        nativeApi.CurlHttpVersion.CURL_HTTP_VERSION_2TLS,
+      );
+      assert.equal(captured[1].options.httpVersion, "1.1", "HTTP/2 opt-in is scoped to OpenCode");
+      assert.equal(
+        captured[1].options.curlOptions[nativeApi.CurlOpt.HTTP_VERSION],
         nativeApi.CurlHttpVersion.CURL_HTTP_VERSION_1_1,
       );
+      assert.equal(transport.getStatus().http2Enabled, true);
       assert.equal(transport.getStatus().lastNegotiatedHttpVersion, "1.1");
     } finally {
       await transport.close();
@@ -163,6 +215,7 @@ describe("Zen libcurl-impersonate transport", () => {
     };
     const transport = createZenTransport({
       profile: "chrome150",
+      experimentalHttp2: true,
       sessionFactory: async () => ({ session, api: nativeApi, tlsImpersonation: true, transport: "test libcurl-impersonate" }),
     });
 
