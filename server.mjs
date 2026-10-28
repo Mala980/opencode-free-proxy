@@ -1324,6 +1324,7 @@ export function createServer(overrides = {}) {
             tlsProfile: cfg.tlsProfile,
             transportReady: Boolean(transportStatus.ready),
             httpVersionRequested: "2",
+            httpVersionScope: "OpenCode HTTPS upstream only",
             alpnRequested: ["h2"],
             lastNegotiatedHttpVersion: transportStatus.lastNegotiatedHttpVersion || null,
             transportError: transportStatus.lastError || null,
@@ -1575,7 +1576,7 @@ export function createServer(overrides = {}) {
         state.transportStartup = Promise.resolve()
           .then(() => transport.prepare())
           .then(() => {
-            if (!injectedTransport) console.log(`[TLS] ${cfg.tlsProfile} impersonation ready; requesting HTTP/2 (h2)`);
+            if (!injectedTransport) console.log(`[TLS] ${cfg.tlsProfile} impersonation ready; HTTP/2 (h2) required only for OpenCode HTTPS`);
           })
           .catch((err) => {
             if (!injectedTransport) console.log(`[TLS] impersonation unavailable: ${err.message}`);

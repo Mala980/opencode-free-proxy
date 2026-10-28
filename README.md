@@ -126,13 +126,18 @@ the global default.
 
 ### TLS / browser fingerprint
 
-Upstream requests now use `impers` with the pinned `libcurl-impersonate`
-native library and its real **Chrome 150 / BoringSSL TLS and HTTP/2
-fingerprint**—not a User-Agent-only imitation. The transport applies the
-Chrome profile, forces libcurl's HTTP/2 mode after profile setup, and negotiates
-`h2` through ALPN. HTTPS responses that fall back to HTTP/1.1 are rejected.
-Proxy, model-list, verification, doctor, and catalog-update
-requests share this transport. The captured OpenCode v2 headers and
+OpenCode upstream traffic uses `impers` with the pinned `libcurl-impersonate`
+native library and its real **Chrome 150 / BoringSSL TLS fingerprint**—not a
+User-Agent-only imitation. **HTTP/2 (`h2` ALPN) is required only for HTTPS
+requests to `opencode.ai` (and its subdomains)**; other destinations through
+the transport are pinned to HTTP/1.1. An OpenCode HTTPS response that falls
+back to HTTP/1.1 is rejected. The client-to-proxy API connection and the
+proxy-to-client response are separate and remain on the local Node HTTP server;
+this upstream `h2` setting does not change them.
+
+Zen generation, live model-list refresh, verification, and direct doctor probes
+share this transport. Fetches from models.dev and client-facing proxy traffic do
+not use the OpenCode `h2` connection. The captured OpenCode v2 headers and
 `Accept-Encoding: gzip, deflate, br, zstd` are preserved.
 
 For SSE, the adapter sets `CURLOPT_ACCEPT_ENCODING` so libcurl decompresses

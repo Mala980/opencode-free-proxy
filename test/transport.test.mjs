@@ -12,7 +12,7 @@ import { createServer as createProxyServer } from "../server.mjs";
 
 const nativeApi = {
   CurlOpt: { HTTP_VERSION: 84, ACCEPT_ENCODING: 10_102 },
-  CurlHttpVersion: { CURL_HTTP_VERSION_2_0: 3, CURL_HTTP_VERSION_2TLS: 4 },
+  CurlHttpVersion: { CURL_HTTP_VERSION_1_1: 2, CURL_HTTP_VERSION_2_0: 3, CURL_HTTP_VERSION_2TLS: 4 },
   NATIVE_IMPERSONATE_TARGETS: [{ target_name: "chrome150" }],
 };
 
@@ -47,10 +47,91 @@ describe("Zen libcurl-impersonate transport", () => {
     });
     try {
       await assert.rejects(
-        transport.request({ url: "https://zen.test/v1/models", stream: true, timeoutMs: 1000 }),
+        transport.request({ url: "https://opencode.ai/v1/models", stream: true, timeoutMs: 1000 }),
         /HTTP\/1\.1.*HTTP\/2 with h2 ALPN is required/,
       );
       assert.equal(transport.getStatus().lastNegotiatedHttpVersion, null);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("refuses plaintext requests to OpenCode so its upstream always uses HTTPS h2", async () => {
+    const session = { async request() { throw new Error("request must not start"); }, async close() {} };
+    const transport = createZenTransport({
+      profile: "chrome150",
+      sessionFactory: async () => ({ session, api: nativeApi, tlsImpersonation: true }),
+    });
+
+    try {
+      await assert.rejects(
+        transport.request({ url: "http://opencode.ai/v1/models" }),
+        /OpenCode upstream requests require HTTPS with HTTP\/2 h2/,
+      );
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("does not follow an OpenCode h2 redirect outside its host scope", async () => {
+    let signalAborted = false;
+    const session = {
+      async request(method, url, options) {
+        options.headerCallback(
+          Buffer.from("HTTP/2 302 Found\r\nlocation: https://cdn.example.com/v1/models\r\n\r\n"),
+        );
+        signalAborted = options.signal.aborted;
+        if (signalAborted) throw options.signal.reason;
+        throw new Error("the external redirect should not be followed");
+      },
+      async close() {},
+    };
+    const transport = createZenTransport({
+      profile: "chrome150",
+      sessionFactory: async () => ({ session, api: nativeApi, tlsImpersonation: true }),
+    });
+
+    try {
+      await assert.rejects(
+        transport.request({ url: "https://opencode.ai/v1/models" }),
+        /HTTP\/2 upstream redirected outside its allowed host scope/,
+      );
+      assert.equal(signalAborted, true);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("uses HTTP/1.1 for HTTPS destinations outside OpenCode", async () => {
+    let captured;
+    const session = {
+      async request(method, url, options) {
+        captured = { method, url, options };
+        return {
+          statusCode: 200,
+          statusText: "OK",
+          headers: { toObject: () => ({ "content-type": "application/json" }) },
+          httpVersionString: "1.1",
+          content: Buffer.from('{"ok":true}'),
+        };
+      },
+      async close() {},
+    };
+    const transport = createZenTransport({
+      profile: "chrome150",
+      sessionFactory: async () => ({ session, api: nativeApi, tlsImpersonation: true }),
+    });
+
+    try {
+      const response = await transport.request({ url: "https://models.example/api.json" });
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), '{"ok":true}');
+      assert.equal(captured.options.httpVersion, "1.1");
+      assert.equal(
+        captured.options.curlOptions[nativeApi.CurlOpt.HTTP_VERSION],
+        nativeApi.CurlHttpVersion.CURL_HTTP_VERSION_1_1,
+      );
+      assert.equal(transport.getStatus().lastNegotiatedHttpVersion, "1.1");
     } finally {
       await transport.close();
     }
@@ -87,7 +168,7 @@ describe("Zen libcurl-impersonate transport", () => {
 
     try {
       const response = await transport.request({
-        url: "https://zen.test/v1/chat/completions",
+        url: "https://opencode.ai/v1/chat/completions",
         method: "POST",
         headers: { "Accept-Encoding": "gzip, deflate, br, zstd", "User-Agent": "opencode/latest/2.2.0/cli" },
         body: "{}",
@@ -205,6 +286,7 @@ describe("Zen libcurl-impersonate transport", () => {
         body: "{}",
         stream: true,
         verify: false,
+        requireHttp2: true,
         timeoutMs: 5000,
       });
       const reader = response.body.getReader();
@@ -227,6 +309,7 @@ describe("Zen libcurl-impersonate transport", () => {
         headers: { "Accept-Encoding": "gzip, deflate, br, zstd" },
         stream: true,
         verify: false,
+        requireHttp2: true,
         timeoutMs: 5000,
       });
       assert.equal(await gzipResponse.text(), "data: compressed\n\n");
@@ -249,7 +332,7 @@ describe("Zen libcurl-impersonate transport", () => {
       const localTlsTransport = {
         prepare: () => proxyTransport.prepare(),
         getStatus: () => proxyTransport.getStatus(),
-        request: (options) => proxyTransport.request({ ...options, verify: false }),
+        request: (options) => proxyTransport.request({ ...options, verify: false, requireHttp2: true }),
         close: () => proxyTransport.close(),
       };
       const app = createProxyServer({
